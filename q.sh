@@ -105,6 +105,27 @@ if [ "$MODE_CHOICE" = "1" ]; then
     sed -i "s/CFIP = os.environ.get('CFIP', '[^']*')/CFIP = os.environ.get('CFIP', 'joeyblog.net')/" app.py
     echo -e "${GREEN}优选IP已自动设置为: joeyblog.net${NC}"
     
+    # 极速模式自动启用WARP
+    echo -e "${BLUE}正在自动配置WARP SOCKS5代理...${NC}"
+    
+    # 安装WARP
+    if ! command -v warp-cli &> /dev/null; then
+        echo -e "${BLUE}正在安装WARP客户端...${NC}"
+        curl -fsSL https://pkg.cloudflareclient.com/pubkey.gpg | sudo gpg --yes --dearmor --output /usr/share/keyrings/cloudflare-warp-archive-keyring.gpg 2>/dev/null
+        echo "deb [arch=amd64 signed-by=/usr/share/keyrings/cloudflare-warp-archive-keyring.gpg] https://pkg.cloudflareclient.com/ $(lsb_release -cs) main" | sudo tee /etc/apt/sources.list.d/cloudflare-client.list > /dev/null
+        sudo apt-get update > /dev/null 2>&1 && sudo apt-get install cloudflare-warp -y > /dev/null 2>&1
+    fi
+    
+    # 配置WARP
+    echo -e "${BLUE}正在配置WARP服务...${NC}"
+    sudo warp-cli register > /dev/null 2>&1
+    sudo warp-cli set-mode proxy > /dev/null 2>&1
+    sudo warp-cli set-proxy-port 40000 > /dev/null 2>&1
+    sudo warp-cli connect > /dev/null 2>&1
+    
+    WARP_ENABLED="true"
+    echo -e "${GREEN}WARP SOCKS5代理已自动启用 (端口: 40000)${NC}"
+    
     echo
     echo -e "${GREEN}极速配置完成！正在启动服务...${NC}"
     echo
@@ -252,6 +273,11 @@ echo -e "服务端口: $(grep "PORT = int" app.py | grep -o "or [0-9]*" | cut -d
 echo -e "优选IP: $(grep "CFIP = " app.py | cut -d"'" -f4)"
 echo -e "优选端口: $(grep "CFPORT = " app.py | cut -d"'" -f4)"
 echo -e "订阅路径: $(grep "SUB_PATH = " app.py | cut -d"'" -f4)"
+if [ "$WARP_ENABLED" = "true" ]; then
+    echo -e "WARP代理: ${GREEN}已启用${NC} (YouTube等网站将通过WARP访问)"
+else
+    echo -e "WARP代理: ${RED}未启用${NC}"
+fi
 echo -e "${YELLOW}========================${NC}"
 echo
 
@@ -342,6 +368,10 @@ echo -e "查看日志: ${BLUE}tail -f $(pwd)/app.log${NC}"
 echo -e "停止服务: ${BLUE}kill $APP_PID${NC}"
 echo -e "重启服务: ${BLUE}kill $APP_PID && nohup python3 app.py > app.log 2>&1 &${NC}"
 echo -e "查看进程: ${BLUE}ps aux | grep python3${NC}"
+if [ "$WARP_ENABLED" = "true" ]; then
+    echo -e "WARP状态: ${BLUE}sudo warp-cli status${NC}"
+    echo -e "重启WARP: ${BLUE}sudo warp-cli disconnect && sudo warp-cli connect${NC}"
+fi
 echo
 
 echo -e "${YELLOW}=== 重要提示 ===${NC}"
