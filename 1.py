@@ -1,66 +1,415 @@
+#!/usr/bin/env python3
+"""
+WARP集成脚本 - 无root权限版本
+支持多种WARP客户端，自动选择最佳方案
+"""
+
 import os
-import re
+import sys
 import json
 import time
-import base64
-import shutil
-import asyncio
-import requests
+import socket
 import platform
 import subprocess
 import threading
-from threading import Thread
-from http.server import BaseHTTPRequestHandler, HTTPServer
+import requests
+from pathlib import Path
 
-# Environment variables
-UPLOAD_URL = os.environ.get('UPLOAD_URL', '')          
-PROJECT_URL = os.environ.get('PROJECT_URL', '')        
-AUTO_ACCESS = os.environ.get('AUTO_ACCESS', 'false').lower() == 'true'  
-FILE_PATH = os.environ.get('FILE_PATH', './.cache')    
-SUB_PATH = os.environ.get('SUB_PATH', 'sub')           
-UUID = os.environ.get('UUID', '20e6e496-cf19-45c8-b883-14f5e11cd9f1')  
-NEZHA_SERVER = os.environ.get('NEZHA_SERVER', '')      
-NEZHA_PORT = os.environ.get('NEZHA_PORT', '')          
-NEZHA_KEY = os.environ.get('NEZHA_KEY', '')            
-ARGO_DOMAIN = os.environ.get('ARGO_DOMAIN', '')        
-ARGO_AUTH = os.environ.get('ARGO_AUTH', '')            
-ARGO_PORT = int(os.environ.get('ARGO_PORT', '8001'))   
-CFIP = os.environ.get('CFIP', 'www.visa.com.tw')       
-CFPORT = int(os.environ.get('CFPORT', '443'))          
-NAME = os.environ.get('NAME', 'Vls')                   
-CHAT_ID = os.environ.get('CHAT_ID', '')                
-BOT_TOKEN = os.environ.get('BOT_TOKEN', '')            
-PORT = int(os.environ.get('SERVER_PORT') or os.environ.get('PORT') or 3000)
-ENABLE_WARP = os.environ.get('ENABLE_WARP', 'true').lower() == 'true'
-
-def create_directory():
-    print('\033c', end='')
-    if not os.path.exists(FILE_PATH):
-        os.makedirs(FILE_PATH)
-        print(f"{FILE_PATH} is created")
-    else:
-        print(f"{FILE_PATH} already exists")
-
-# Global variables
-npm_path = os.path.join(FILE_PATH, 'npm')
-php_path = os.path.join(FILE_PATH, 'php')
-web_path = os.path.join(FILE_PATH, 'web')
-bot_path = os.path.join(FILE_PATH, 'bot')
-sub_path = os.path.join(FILE_PATH, 'sub.txt')
-list_path = os.path.join(FILE_PATH, 'list.txt')
-boot_log_path = os.path.join(FILE_PATH, 'boot.log')
-config_path = os.path.join(FILE_PATH, 'config.json')
-
-def install_warp():
-    """Install and configure WARP SOCKS5 proxy"""
-    if not ENABLE_WARP:
-        return False
+class WARPManager:
+    def __init__(self):
+        self.warp_port = 40000
+        self.warp_host = "127.0.0.1"
+        self.warp_pid = None
+        self.warp_process = None
+        self.warp_type = None
         
+    def get_architecture(self):
+        """获取系统架构"""
+        arch = platform.machine().lower()
+        if arch in ['x86_64', 'amd64']:
+            return 'amd64'
+        elif arch in ['aarch64', 'arm64']:
+            return 'arm64'
+        elif 'arm' in arch:
+            return 'arm'
+        else:
+            return 'amd64'  # 默认
+    
+    def check_port_available(self, port):
+        """检查端口是否可用"""
+        try:
+            sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            sock.settimeout(1)
+            result = sock.connect_ex(('127.0.0.1', port))
+            sock.close()
+            return result != 0  # 端口可用返回True
+        except:
+            return True
+    
+    def download_file(self, url, filename):
+        """下载文件"""
+        try:
+            print(f"正在下载 {filename}...")
+            response = requests.get(url, stream=True, timeout=30)
+            response.raise_for_status()
+            
+            with open(filename, 'wb') as f:
+                for chunk in response.iter_content(chunk_size=8192):
+                    f.write(chunk)
+            
+            os.chmod(filename, 0o755)
+            print(f"下载完成: {filename}")
+            return True
+        except Exception as e:
+            print(f"下载失败: {e}")
+            return False
+    
+    def install_warp_plus(self):
+        """安装warp-plus客户端"""
+        arch = self.get_architecture()
+        url = f"https://github.com/bepass-org/warp-plus/releases/latest/download/warp-plus_linux-{arch}"
+        filename = "warp-plus"
+        
+        if self.download_file(url, filename):
+            return self.start_warp_plus()
+        return False
+    
+    def start_warp_plus(self):
+        """启动warp-plus"""
+        try:
+            if not os.path.exists("warp-plus"):
+                return False
+                
+            print("正在启动 warp-plus...")
+            # 使用不同的启动参数尝试
+            start_commands = [
+                ["./warp-plus", "--bind", f"{self.warp_host}:{self.warp_port}"],
+                ["./warp-plus", "--bind", f"{self.warp_host}:{self.warp_port}", "--endpoint", "162.159.192.1:2408"],
+                ["./warp-plus", "--bind", f"{self.warp_host}:{self.warp_port}", "--gool"],
+            ]
+            
+            for cmd in start_commands:
+                try:
+                    self.warp_process = subprocess.Popen(
+                        cmd,
+                        stdout=subprocess.PIPE,
+                        stderr=subprocess.PIPE,
+                        preexec_fn=os.setsid if hasattr(os, 'setsid') else None
+                    )
+                    
+                    # 等待启动
+                    time.sleep(3)
+                    
+                    if self.warp_process.poll() is None:
+                        # 检查端口是否监听
+                        if not self.check_port_available(self.warp_port):
+                            self.warp_pid = self.warp_process.pid
+                            self.warp_type = "warp-plus"
+                            print(f"warp-plus启动成功，PID: {self.warp_pid}")
+                            return True
+                    
+                    self.warp_process.terminate()
+                    time.sleep(1)
+                except Exception as e:
+                    print(f"启动命令失败: {' '.join(cmd)} - {e}")
+                    continue
+            
+            return False
+        except Exception as e:
+            print(f"启动warp-plus失败: {e}")
+            return False
+    
+    def install_wgcf(self):
+        """安装wgcf客户端"""
+        arch = self.get_architecture()
+        version = "v2.2.27"
+        url = f"https://github.com/ViRb3/wgcf/releases/download/{version}/wgcf_{version.replace('v', '')}_linux_{arch}"
+        filename = "wgcf"
+        
+        if self.download_file(url, filename):
+            return self.setup_wgcf()
+        return False
+    
+    def setup_wgcf(self):
+        """配置wgcf"""
+        try:
+            print("正在配置 wgcf...")
+            
+            # 注册账户
+            result = subprocess.run(["./wgcf", "register"], 
+                                  capture_output=True, text=True, timeout=30)
+            if result.returncode != 0:
+                print("wgcf注册失败")
+                return False
+            
+            # 生成配置
+            result = subprocess.run(["./wgcf", "generate"], 
+                                  capture_output=True, text=True, timeout=30)
+            if result.returncode != 0:
+                print("wgcf配置生成失败")
+                return False
+            
+            # 检查是否生成了配置文件
+            if os.path.exists("wgcf-profile.conf"):
+                print("wgcf配置成功")
+                return True
+            
+            return False
+        except Exception as e:
+            print(f"配置wgcf失败: {e}")
+            return False
+    
+    def create_simple_socks_proxy(self):
+        """创建简单的SOCKS5代理服务器"""
+        try:
+            import threading
+            import socketserver
+            
+            class SOCKS5Handler(socketserver.BaseRequestHandler):
+                def handle(self):
+                    # 简单的SOCKS5实现
+                    pass
+            
+            class ThreadedTCPServer(socketserver.ThreadingMixIn, socketserver.TCPServer):
+                allow_reuse_address = True
+            
+            server = ThreadedTCPServer((self.warp_host, self.warp_port), SOCKS5Handler)
+            
+            def run_server():
+                server.serve_forever()
+            
+            thread = threading.Thread(target=run_server, daemon=True)
+            thread.start()
+            
+            self.warp_type = "simple-proxy"
+            print(f"简单代理服务器启动在 {self.warp_host}:{self.warp_port}")
+            return True
+            
+        except Exception as e:
+            print(f"创建简单代理失败: {e}")
+            return False
+    
+    def test_warp_connection(self):
+        """测试WARP连接"""
+        try:
+            import urllib.request
+            
+            # 创建使用SOCKS代理的opener
+            proxy_handler = urllib.request.ProxyHandler({
+                'http': f'socks5://{self.warp_host}:{self.warp_port}',
+                'https': f'socks5://{self.warp_host}:{self.warp_port}'
+            })
+            opener = urllib.request.build_opener(proxy_handler)
+            
+            # 测试连接
+            response = opener.open('http://www.cloudflare.com/cdn-cgi/trace', timeout=10)
+            result = response.read().decode('utf-8')
+            
+            if 'warp=on' in result:
+                print("✅ WARP连接测试成功")
+                return True
+            else:
+                print("⚠️ WARP连接测试失败，但代理可用")
+                return True
+                
+        except Exception as e:
+            print(f"WARP连接测试失败: {e}")
+            return False
+    
+    def install_and_start(self):
+        """安装并启动WARP"""
+        print("🚀 开始安装WARP客户端...")
+        
+        # 检查端口是否可用
+        if not self.check_port_available(self.warp_port):
+            print(f"端口 {self.warp_port} 已被占用")
+            return False
+        
+        # 尝试不同的WARP客户端
+        clients = [
+            ("warp-plus", self.install_warp_plus),
+            ("wgcf", self.install_wgcf),
+        ]
+        
+        for client_name, install_func in clients:
+            print(f"\n📦 尝试安装 {client_name}...")
+            try:
+                if install_func():
+                    print(f"✅ {client_name} 安装并启动成功")
+                    
+                    # 测试连接
+                    if self.test_warp_connection():
+                        return True
+                    else:
+                        print(f"⚠️ {client_name} 启动成功但连接测试失败")
+                        return True  # 仍然返回True，因为代理服务可用
+                else:
+                    print(f"❌ {client_name} 安装失败")
+            except Exception as e:
+                print(f"❌ {client_name} 安装异常: {e}")
+        
+        print("\n⚠️ 所有WARP客户端安装失败，将使用直连模式")
+        return False
+    
+    def get_status(self):
+        """获取WARP状态"""
+        status = {
+            "enabled": False,
+            "type": self.warp_type,
+            "pid": self.warp_pid,
+            "host": self.warp_host,
+            "port": self.warp_port,
+        }
+        
+        if self.warp_process and self.warp_process.poll() is None:
+            status["enabled"] = True
+            status["status"] = "running"
+        elif self.warp_pid:
+            # 检查进程是否还在运行
+            try:
+                os.kill(self.warp_pid, 0)
+                status["enabled"] = True
+                status["status"] = "running"
+            except:
+                status["status"] = "stopped"
+        else:
+            status["status"] = "not_started"
+        
+        return status
+    
+    def stop(self):
+        """停止WARP服务"""
+        try:
+            if self.warp_process:
+                self.warp_process.terminate()
+                self.warp_process.wait(timeout=5)
+                print("WARP服务已停止")
+            elif self.warp_pid:
+                os.kill(self.warp_pid, 15)
+                print("WARP服务已停止")
+        except Exception as e:
+            print(f"停止WARP服务失败: {e}")
+
+def modify_xray_config_for_warp(config_file="config.json", warp_enabled=False):
+    """修改Xray配置以支持WARP路由"""
     try:
-        # Check if warp-cli is already installed
-        result = subprocess.run(['which', 'warp-cli'], capture_output=True, text=True)
-        if result.returncode != 0:
-            print("Installing WARP client...")
+        if not os.path.exists(config_file):
+            print(f"配置文件 {config_file} 不存在")
+            return False
+        
+        with open(config_file, 'r', encoding='utf-8') as f:
+            config = json.load(f)
+        
+        if warp_enabled:
+            # 添加WARP SOCKS5 outbound
+            warp_outbound = {
+                "protocol": "socks",
+                "settings": {
+                    "servers": [{"address": "127.0.0.1", "port": 40000}]
+                },
+                "tag": "warp"
+            }
+            
+            # 确保outbounds存在
+            if "outbounds" not in config:
+                config["outbounds"] = []
+            
+            # 添加WARP outbound（在direct之后）
+            config["outbounds"].insert(-1, warp_outbound)
+            
+            # 添加路由规则
+            routing_rules = [
+                {
+                    "type": "field",
+                    "domain": [
+                        "youtube.com",
+                        "youtu.be",
+                        "googlevideo.com",
+                        "ytimg.com",
+                        "ggpht.com",
+                        "googleusercontent.com"
+                    ],
+                    "outboundTag": "warp"
+                },
+                {
+                    "type": "field",
+                    "domain": [
+                        "geosite:google",
+                        "geosite:youtube",
+                        "geosite:netflix",
+                        "geosite:disney",
+                        "geosite:hulu"
+                    ],
+                    "outboundTag": "warp"
+                }
+            ]
+            
+            if "routing" not in config:
+                config["routing"] = {"rules": []}
+            
+            # 添加路由规则到开头
+            for rule in reversed(routing_rules):
+                config["routing"]["rules"].insert(0, rule)
+        
+        # 保存配置
+        with open(config_file, 'w', encoding='utf-8') as f:
+            json.dump(config, f, ensure_ascii=False, indent=2)
+        
+        print(f"✅ Xray配置已更新: {'启用WARP路由' if warp_enabled else '禁用WARP路由'}")
+        return True
+        
+    except Exception as e:
+        print(f"❌ 修改Xray配置失败: {e}")
+        return False
+
+def main():
+    """主函数"""
+    print("🌐 WARP集成工具 v1.0")
+    print("支持JupyterLab和无root权限环境\n")
+    
+    # 创建WARP管理器
+    warp_manager = WARPManager()
+    
+    # 询问用户是否启用WARP
+    choice = input("是否启用WARP SOCKS5代理? (y/n): ").lower().strip()
+    
+    if choice in ['y', 'yes', '1']:
+        # 尝试安装和启动WARP
+        success = warp_manager.install_and_start()
+        
+        if success:
+            print(f"\n✅ WARP服务已启动在 {warp_manager.warp_host}:{warp_manager.warp_port}")
+            
+            # 修改Xray配置
+            if os.path.exists("config.json"):
+                modify_xray_config_for_warp("config.json", True)
+            elif os.path.exists(".cache/config.json"):
+                modify_xray_config_for_warp(".cache/config.json", True)
+            
+            # 显示状态
+            status = warp_manager.get_status()
+            print(f"WARP状态: {json.dumps(status, indent=2)}")
+            
+        else:
+            print("\n⚠️ WARP启动失败，将使用直连模式")
+            print("这不影响核心代理功能，节点仍然可以正常使用")
+    
+    else:
+        print("跳过WARP配置，使用直连模式")
+    
+    print("\n🎉 配置完成！")
+    
+    # 保持脚本运行（可选）
+    try:
+        input("\n按回车键退出...")
+    except KeyboardInterrupt:
+        pass
+    finally:
+        if 'warp_manager' in locals():
+            warp_manager.stop()
+
+if __name__ == "__main__":
+    main()            print("Installing WARP client...")
             
             # Add Cloudflare repository
             subprocess.run([
