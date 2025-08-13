@@ -55,12 +55,403 @@ if [ ! -d "$PROJECT_DIR" ]; then
         git clone https://github.com/eooce/python-xray-argo.git
     else
         echo -e "${YELLOW}Git未安装，使用wget下载...${NC}"
-        wget -q https://github.com/eooce/python-xray-argo/archive/refs/heads/main.zip -O python-xray-argo.zip
-        if command -v unzip &> /dev/null; then
-            unzip -q python-xray-argo.zip
-            mv python-xray-argo-main python-xray-argo
-            rm python-xray-argo.zip
+        if wget -q https://github.com/eooce/python-xray-argo/archive/refs/heads/main.zip -O python-xray-argo.zip; then
+            if command -v unzip &> /dev/null; then
+                unzip -q python-xray-argo.zip && mv python-xray-argo-main python-xray-argo && rm python-xray-argo.zip
+            else
+                echo -e "${YELLOW}正在尝试安装 unzip...${NC}"
+                if sudo apt-get install -y unzip > /dev/null 2>&1; then
+                    unzip -q python-xray-argo.zip && mv python-xray-argo-main python-xray-argo && rm python-xray-argo.zip
+                else
+                    echo -e "${RED}无法安装unzip，尝试使用python解压...${NC}"
+                    python3 -c "
+import zipfile
+import os
+with zipfile.ZipFile('python-xray-argo.zip', 'r') as zip_ref:
+    zip_ref.extractall('.')
+os.rename('python-xray-argo-main', 'python-xray-argo')
+os.remove('python-xray-argo.zip')
+"
+                fi
+            fi
         else
+            echo -e "${RED}下载失败，请检查网络连接${NC}"
+            exit 1
+        fi
+    fi
+    
+    if [ $? -ne 0 ] || [ ! -d "$PROJECT_DIR" ]; then
+        echo -e "${RED}下载失败，请检查网络连接${NC}"
+        exit 1
+    fi
+fi
+
+cd "$PROJECT_DIR"
+
+echo -e "${GREEN}依赖安装完成！${NC}"
+echo
+
+if [ ! -f "app.py" ]; then
+    echo -e "${RED}未找到app.py文件！${NC}"
+    exit 1
+fi
+
+cp app.py app.py.backup
+echo -e "${YELLOW}已备份原始文件为 app.py.backup${NC}"
+
+if [ "$MODE_CHOICE" = "1" ]; then
+    echo -e "${BLUE}=== 极速模式 ===${NC}"
+    echo
+    
+    echo -e "${YELLOW}当前UUID: $(grep "UUID = " app.py | head -1 | cut -d"'" -f2)${NC}"
+    read -p "请输入新的 UUID (留空自动生成): " UUID_INPUT
+    if [ -z "$UUID_INPUT" ]; then
+        UUID_INPUT=$(generate_uuid)
+        echo -e "${GREEN}自动生成UUID: $UUID_INPUT${NC}"
+    fi
+    
+    sed -i "s/UUID = os.environ.get('UUID', '[^']*')/UUID = os.environ.get('UUID', '$UUID_INPUT')/" app.py
+    echo -e "${GREEN}UUID 已设置为: $UUID_INPUT${NC}"
+    
+    sed -i "s/CFIP = os.environ.get('CFIP', '[^']*')/CFIP = os.environ.get('CFIP', 'joeyblog.net')/" app.py
+    echo -e "${GREEN}优选IP已自动设置为: joeyblog.net${NC}"
+    
+    # 极速模式自动启用WARP
+    echo -e "${BLUE}正在自动配置WARP SOCKS5代理...${NC}"
+    
+    # 安装WARP（无root权限方案）
+    if ! command -v warp-cli &> /dev/null; then
+        echo -e "${BLUE}正在安装WARP客户端（无root版本）...${NC}"
+        
+        # 检测架构
+        ARCH=$(uname -m)
+        case $ARCH in
+            x86_64)
+                WARP_URL="https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64"
+                WARP_GO_URL="https://github.com/bepass-org/warp-plus/releases/latest/download/warp-plus_linux-amd64"
+                ;;
+            aarch64|arm64)
+                WARP_URL="https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-arm64"
+                WARP_GO_URL="https://github.com/bepass-org/warp-plus/releases/latest/download/warp-plus_linux-arm64"
+                ;;
+            *)
+                echo -e "${YELLOW}不支持的架构: $ARCH，跳过WARP安装${NC}"
+                WARP_ENABLED="false"
+                ;;
+        esac
+        
+        if [ "$WARP_ENABLED" != "false" ]; then
+            # 下载warp-plus（用户态WARP客户端）
+            wget -q -O warp-plus "$WARP_GO_URL" 2>/dev/null || curl -s -L -o warp-plus "$WARP_GO_URL"
+            
+            if [ -f "warp-plus" ]; then
+                chmod +x warp-plus
+                echo -e "${GREEN}WARP客户端下载成功${NC}"
+                
+                # 启动WARP SOCKS5代理
+                echo -e "${BLUE}正在启动WARP SOCKS5代理...${NC}"
+                nohup ./warp-plus --bind 127.0.0.1:40000 --endpoint 162.159.192.1:2408 > warp.log 2>&1 &
+                WARP_PID=$!
+                
+                # 等待WARP启动
+                sleep 3
+                
+                # 检查WARP是否正常运行
+                if ps -p $WARP_PID > /dev/null; then
+                    echo -e "${GREEN}WARP SOCKS5代理已启动 (PID: $WARP_PID, 端口: 40000)${NC}"
+                    WARP_ENABLED="true"
+                else
+                    echo -e "${YELLOW}WARP启动失败，将使用直连模式${NC}"
+                    WARP_ENABLED="false"
+                fi
+            else
+                echo -e "${YELLOW}WARP下载失败，将使用直连模式${NC}"
+                WARP_ENABLED="false"
+            fi
+        fi
+    else
+        # 如果已安装warp-cli，尝试配置
+        echo -e "${BLUE}正在配置已安装的WARP...${NC}"
+        warp-cli register > /dev/null 2>&1
+        warp-cli set-mode proxy > /dev/null 2>&1
+        warp-cli set-proxy-port 40000 > /dev/null 2>&1
+        warp-cli connect > /dev/null 2>&1
+        
+        if [ $? -eq 0 ]; then
+            echo -e "${GREEN}WARP配置成功${NC}"
+            WARP_ENABLED="true"
+        else
+            echo -e "${YELLOW}WARP配置失败，将使用直连模式${NC}"
+            WARP_ENABLED="false"
+        fi
+    fi
+    
+    echo
+    echo -e "${GREEN}极速配置完成！正在启动服务...${NC}"
+    echo
+    
+else
+    echo -e "${BLUE}=== 完整配置模式 ===${NC}"
+    echo
+    
+    echo -e "${YELLOW}当前UUID: $(grep "UUID = " app.py | head -1 | cut -d"'" -f2)${NC}"
+    read -p "请输入新的 UUID (留空自动生成): " UUID_INPUT
+    if [ -z "$UUID_INPUT" ]; then
+        UUID_INPUT=$(generate_uuid)
+        echo -e "${GREEN}自动生成UUID: $UUID_INPUT${NC}"
+    fi
+    sed -i "s/UUID = os.environ.get('UUID', '[^']*')/UUID = os.environ.get('UUID', '$UUID_INPUT')/" app.py
+    echo -e "${GREEN}UUID 已设置为: $UUID_INPUT${NC}"
+
+    echo -e "${YELLOW}当前节点名称: $(grep "NAME = " app.py | head -1 | cut -d"'" -f4)${NC}"
+    read -p "请输入节点名称 (留空保持不变): " NAME_INPUT
+    if [ -n "$NAME_INPUT" ]; then
+        sed -i "s/NAME = os.environ.get('NAME', '[^']*')/NAME = os.environ.get('NAME', '$NAME_INPUT')/" app.py
+        echo -e "${GREEN}节点名称已设置为: $NAME_INPUT${NC}"
+    fi
+
+    echo -e "${YELLOW}当前服务端口: $(grep "PORT = int" app.py | grep -o "or [0-9]*" | cut -d" " -f2)${NC}"
+    read -p "请输入服务端口 (留空保持不变): " PORT_INPUT
+    if [ -n "$PORT_INPUT" ]; then
+        sed -i "s/PORT = int(os.environ.get('SERVER_PORT') or os.environ.get('PORT') or [0-9]*)/PORT = int(os.environ.get('SERVER_PORT') or os.environ.get('PORT') or $PORT_INPUT)/" app.py
+        echo -e "${GREEN}端口已设置为: $PORT_INPUT${NC}"
+    fi
+
+    echo -e "${YELLOW}当前优选IP: $(grep "CFIP = " app.py | cut -d"'" -f4)${NC}"
+    read -p "请输入优选IP/域名 (留空使用默认 joeyblog.net): " CFIP_INPUT
+    if [ -z "$CFIP_INPUT" ]; then
+        CFIP_INPUT="joeyblog.net"
+    fi
+    sed -i "s/CFIP = os.environ.get('CFIP', '[^']*')/CFIP = os.environ.get('CFIP', '$CFIP_INPUT')/" app.py
+    echo -e "${GREEN}优选IP已设置为: $CFIP_INPUT${NC}"
+
+    echo -e "${YELLOW}当前优选端口: $(grep "CFPORT = " app.py | cut -d"'" -f4)${NC}"
+    read -p "请输入优选端口 (留空保持不变): " CFPORT_INPUT
+    if [ -n "$CFPORT_INPUT" ]; then
+        sed -i "s/CFPORT = int(os.environ.get('CFPORT', '[^']*'))/CFPORT = int(os.environ.get('CFPORT', '$CFPORT_INPUT'))/" app.py
+        echo -e "${GREEN}优选端口已设置为: $CFPORT_INPUT${NC}"
+    fi
+
+    echo -e "${YELLOW}当前Argo端口: $(grep "ARGO_PORT = " app.py | cut -d"'" -f4)${NC}"
+    read -p "请输入 Argo 端口 (留空保持不变): " ARGO_PORT_INPUT
+    if [ -n "$ARGO_PORT_INPUT" ]; then
+        sed -i "s/ARGO_PORT = int(os.environ.get('ARGO_PORT', '[^']*'))/ARGO_PORT = int(os.environ.get('ARGO_PORT', '$ARGO_PORT_INPUT'))/" app.py
+        echo -e "${GREEN}Argo端口已设置为: $ARGO_PORT_INPUT${NC}"
+    fi
+
+    echo -e "${YELLOW}当前订阅路径: $(grep "SUB_PATH = " app.py | cut -d"'" -f4)${NC}"
+    read -p "请输入订阅路径 (留空保持不变): " SUB_PATH_INPUT
+    if [ -n "$SUB_PATH_INPUT" ]; then
+        sed -i "s/SUB_PATH = os.environ.get('SUB_PATH', '[^']*')/SUB_PATH = os.environ.get('SUB_PATH', '$SUB_PATH_INPUT')/" app.py
+        echo -e "${GREEN}订阅路径已设置为: $SUB_PATH_INPUT${NC}"
+    fi
+
+    echo
+    echo -e "${YELLOW}是否配置高级选项? (y/n)${NC}"
+    read -p "> " ADVANCED_CONFIG
+
+    if [ "$ADVANCED_CONFIG" = "y" ] || [ "$ADVANCED_CONFIG" = "Y" ]; then
+        echo -e "${YELLOW}当前上传URL: $(grep "UPLOAD_URL = " app.py | cut -d"'" -f4)${NC}"
+        read -p "请输入上传URL (留空保持不变): " UPLOAD_URL_INPUT
+        if [ -n "$UPLOAD_URL_INPUT" ]; then
+            sed -i "s|UPLOAD_URL = os.environ.get('UPLOAD_URL', '[^']*')|UPLOAD_URL = os.environ.get('UPLOAD_URL', '$UPLOAD_URL_INPUT')|" app.py
+            echo -e "${GREEN}上传URL已设置${NC}"
+        fi
+
+        echo -e "${YELLOW}当前项目URL: $(grep "PROJECT_URL = " app.py | cut -d"'" -f4)${NC}"
+        read -p "请输入项目URL (留空保持不变): " PROJECT_URL_INPUT
+        if [ -n "$PROJECT_URL_INPUT" ]; then
+            sed -i "s|PROJECT_URL = os.environ.get('PROJECT_URL', '[^']*')|PROJECT_URL = os.environ.get('PROJECT_URL', '$PROJECT_URL_INPUT')|" app.py
+            echo -e "${GREEN}项目URL已设置${NC}"
+        fi
+
+        echo -e "${YELLOW}当前自动保活状态: $(grep "AUTO_ACCESS = " app.py | grep -o "'[^']*'" | tail -1 | tr -d "'")${NC}"
+        echo -e "${YELLOW}是否启用自动保活? (y/n)${NC}"
+        read -p "> " AUTO_ACCESS_INPUT
+        if [ "$AUTO_ACCESS_INPUT" = "y" ] || [ "$AUTO_ACCESS_INPUT" = "Y" ]; then
+            sed -i "s/AUTO_ACCESS = os.environ.get('AUTO_ACCESS', '[^']*')/AUTO_ACCESS = os.environ.get('AUTO_ACCESS', 'true')/" app.py
+            echo -e "${GREEN}自动保活已启用${NC}"
+        elif [ "$AUTO_ACCESS_INPUT" = "n" ] || [ "$AUTO_ACCESS_INPUT" = "N" ]; then
+            sed -i "s/AUTO_ACCESS = os.environ.get('AUTO_ACCESS', '[^']*')/AUTO_ACCESS = os.environ.get('AUTO_ACCESS', 'false')/" app.py
+            echo -e "${GREEN}自动保活已禁用${NC}"
+        fi
+
+        echo -e "${YELLOW}当前哪吒服务器: $(grep "NEZHA_SERVER = " app.py | cut -d"'" -f4)${NC}"
+        read -p "请输入哪吒服务器地址 (留空保持不变): " NEZHA_SERVER_INPUT
+        if [ -n "$NEZHA_SERVER_INPUT" ]; then
+            sed -i "s|NEZHA_SERVER = os.environ.get('NEZHA_SERVER', '[^']*')|NEZHA_SERVER = os.environ.get('NEZHA_SERVER', '$NEZHA_SERVER_INPUT')|" app.py
+            
+            echo -e "${YELLOW}当前哪吒端口: $(grep "NEZHA_PORT = " app.py | cut -d"'" -f4)${NC}"
+            read -p "请输入哪吒端口 (v1版本留空): " NEZHA_PORT_INPUT
+            if [ -n "$NEZHA_PORT_INPUT" ]; then
+                sed -i "s|NEZHA_PORT = os.environ.get('NEZHA_PORT', '[^']*')|NEZHA_PORT = os.environ.get('NEZHA_PORT', '$NEZHA_PORT_INPUT')|" app.py
+            fi
+            
+            echo -e "${YELLOW}当前哪吒密钥: $(grep "NEZHA_KEY = " app.py | cut -d"'" -f4)${NC}"
+            read -p "请输入哪吒密钥: " NEZHA_KEY_INPUT
+            if [ -n "$NEZHA_KEY_INPUT" ]; then
+                sed -i "s|NEZHA_KEY = os.environ.get('NEZHA_KEY', '[^']*')|NEZHA_KEY = os.environ.get('NEZHA_KEY', '$NEZHA_KEY_INPUT')|" app.py
+            fi
+            echo -e "${GREEN}哪吒配置已设置${NC}"
+        fi
+
+        echo -e "${YELLOW}当前Argo域名: $(grep "ARGO_DOMAIN = " app.py | cut -d"'" -f4)${NC}"
+        read -p "请输入 Argo 固定隧道域名 (留空保持不变): " ARGO_DOMAIN_INPUT
+        if [ -n "$ARGO_DOMAIN_INPUT" ]; then
+            sed -i "s|ARGO_DOMAIN = os.environ.get('ARGO_DOMAIN', '[^']*')|ARGO_DOMAIN = os.environ.get('ARGO_DOMAIN', '$ARGO_DOMAIN_INPUT')|" app.py
+            
+            echo -e "${YELLOW}当前Argo密钥: $(grep "ARGO_AUTH = " app.py | cut -d"'" -f4)${NC}"
+            read -p "请输入 Argo 固定隧道密钥: " ARGO_AUTH_INPUT
+            if [ -n "$ARGO_AUTH_INPUT" ]; then
+                sed -i "s|ARGO_AUTH = os.environ.get('ARGO_AUTH', '[^']*')|ARGO_AUTH = os.environ.get('ARGO_AUTH', '$ARGO_AUTH_INPUT')|" app.py
+            fi
+            echo -e "${GREEN}Argo固定隧道配置已设置${NC}"
+        fi
+
+        echo -e "${YELLOW}当前Bot Token: $(grep "BOT_TOKEN = " app.py | cut -d"'" -f4)${NC}"
+        read -p "请输入 Telegram Bot Token (留空保持不变): " BOT_TOKEN_INPUT
+        if [ -n "$BOT_TOKEN_INPUT" ]; then
+            sed -i "s|BOT_TOKEN = os.environ.get('BOT_TOKEN', '[^']*')|BOT_TOKEN = os.environ.get('BOT_TOKEN', '$BOT_TOKEN_INPUT')|" app.py
+            
+            echo -e "${YELLOW}当前Chat ID: $(grep "CHAT_ID = " app.py | cut -d"'" -f4)${NC}"
+            read -p "请输入 Telegram Chat ID: " CHAT_ID_INPUT
+            if [ -n "$CHAT_ID_INPUT" ]; then
+                sed -i "s|CHAT_ID = os.environ.get('CHAT_ID', '[^']*')|CHAT_ID = os.environ.get('CHAT_ID', '$CHAT_ID_INPUT')|" app.py
+            fi
+            echo -e "${GREEN}Telegram配置已设置${NC}"
+        fi
+    fi
+
+    echo
+    echo -e "${GREEN}完整配置完成！${NC}"
+fi
+
+echo -e "${YELLOW}=== 当前配置摘要 ===${NC}"
+echo -e "UUID: $(grep "UUID = " app.py | head -1 | cut -d"'" -f2)"
+echo -e "节点名称: $(grep "NAME = " app.py | head -1 | cut -d"'" -f4)"
+echo -e "服务端口: $(grep "PORT = int" app.py | grep -o "or [0-9]*" | cut -d" " -f2)"
+echo -e "优选IP: $(grep "CFIP = " app.py | cut -d"'" -f4)"
+echo -e "优选端口: $(grep "CFPORT = " app.py | cut -d"'" -f4)"
+echo -e "订阅路径: $(grep "SUB_PATH = " app.py | cut -d"'" -f4)"
+if [ "$WARP_ENABLED" = "true" ]; then
+    echo -e "WARP代理: ${GREEN}已启用${NC} (YouTube等网站将通过WARP访问)"
+else
+    echo -e "WARP代理: ${RED}未启用${NC}"
+fi
+echo -e "${YELLOW}========================${NC}"
+echo
+
+echo -e "${BLUE}正在启动服务...${NC}"
+echo -e "${YELLOW}当前工作目录：$(pwd)${NC}"
+echo
+
+nohup python3 app.py > app.log 2>&1 &
+APP_PID=$!
+
+echo -e "${GREEN}服务已在后台启动，PID: $APP_PID${NC}"
+echo -e "${YELLOW}日志文件: $(pwd)/app.log${NC}"
+
+echo -e "${BLUE}等待服务启动...${NC}"
+sleep 10
+
+if ps -p $APP_PID > /dev/null; then
+    echo -e "${GREEN}服务运行正常${NC}"
+else
+    echo -e "${RED}服务启动失败，请检查日志${NC}"
+    echo -e "${YELLOW}查看日志: tail -f app.log${NC}"
+    exit 1
+fi
+
+SERVICE_PORT=$(grep "PORT = int" app.py | grep -o "or [0-9]*" | cut -d" " -f2)
+CURRENT_UUID=$(grep "UUID = " app.py | head -1 | cut -d"'" -f2)
+SUB_PATH_VALUE=$(grep "SUB_PATH = " app.py | cut -d"'" -f4)
+
+echo -e "${BLUE}等待节点信息生成...${NC}"
+sleep 15
+
+NODE_INFO=""
+if [ -f ".cache/sub.txt" ]; then
+    NODE_INFO=$(cat .cache/sub.txt)
+elif [ -f "sub.txt" ]; then
+    NODE_INFO=$(cat sub.txt)
+fi
+
+echo
+echo -e "${GREEN}========================================${NC}"
+echo -e "${GREEN}           部署完成！                   ${NC}"
+echo -e "${GREEN}========================================${NC}"
+echo
+
+echo -e "${YELLOW}=== 服务信息 ===${NC}"
+echo -e "服务状态: ${GREEN}运行中${NC}"
+echo -e "进程PID: ${BLUE}$APP_PID${NC}"
+echo -e "服务端口: ${BLUE}$SERVICE_PORT${NC}"
+echo -e "UUID: ${BLUE}$CURRENT_UUID${NC}"
+echo -e "订阅路径: ${BLUE}/$SUB_PATH_VALUE${NC}"
+echo
+
+echo -e "${YELLOW}=== 访问地址 ===${NC}"
+if command -v curl &> /dev/null; then
+    PUBLIC_IP=$(curl -s https://api.ipify.org 2>/dev/null || echo "获取失败")
+    if [ "$PUBLIC_IP" != "获取失败" ]; then
+        echo -e "订阅地址: ${GREEN}http://$PUBLIC_IP:$SERVICE_PORT/$SUB_PATH_VALUE${NC}"
+        echo -e "管理面板: ${GREEN}http://$PUBLIC_IP:$SERVICE_PORT${NC}"
+    fi
+fi
+echo -e "本地订阅: ${GREEN}http://localhost:$SERVICE_PORT/$SUB_PATH_VALUE${NC}"
+echo -e "本地面板: ${GREEN}http://localhost:$SERVICE_PORT${NC}"
+echo
+
+if [ -n "$NODE_INFO" ]; then
+    echo -e "${YELLOW}=== 节点信息 ===${NC}"
+    DECODED_NODES=$(echo "$NODE_INFO" | base64 -d 2>/dev/null || echo "$NODE_INFO")
+    echo -e "${GREEN}原始节点配置:${NC}"
+    echo "$DECODED_NODES"
+    echo
+    echo -e "${GREEN}订阅链接 (Base64编码):${NC}"
+    echo "$NODE_INFO"
+    echo
+    
+    # 生成Clash配置链接（使用新的API接口）
+    ENCODED_NODE_INFO=$(echo -n "$NODE_INFO" | sed 's/+/%2B/g; s/\//%2F/g; s/=/%3D/g')
+    echo -e "${GREEN}Clash配置链接:${NC}"
+    echo "https://sub.id9.cc/sub?target=clash&url=data:text/plain;base64,$ENCODED_NODE_INFO"
+    echo
+else
+    echo -e "${YELLOW}=== 节点信息 ===${NC}"
+    echo -e "${RED}节点信息还未生成，请稍等几分钟后查看日志或手动访问订阅地址${NC}"
+    echo
+fi
+
+echo -e "${YELLOW}=== 管理命令 ===${NC}"
+echo -e "查看日志: ${BLUE}tail -f $(pwd)/app.log${NC}"
+echo -e "停止服务: ${BLUE}kill $APP_PID${NC}"
+echo -e "重启服务: ${BLUE}kill $APP_PID && nohup python3 app.py > app.log 2>&1 &${NC}"
+echo -e "查看进程: ${BLUE}ps aux | grep python3${NC}"
+if [ "$WARP_ENABLED" = "true" ]; then
+    if [ -n "$WARP_PID" ]; then
+        echo -e "WARP状态: ${BLUE}ps -p $WARP_PID${NC}"
+        echo -e "重启WARP: ${BLUE}kill $WARP_PID && nohup ./warp-plus --bind 127.0.0.1:40000 --endpoint 162.159.192.1:2408 > warp.log 2>&1 &${NC}"
+        echo -e "查看WARP日志: ${BLUE}tail -f $(pwd)/warp.log${NC}"
+    else
+        echo -e "WARP状态: ${BLUE}warp-cli status${NC}"
+        echo -e "重启WARP: ${BLUE}warp-cli disconnect && warp-cli connect${NC}"
+    fi
+fi
+echo
+
+echo -e "${YELLOW}=== 重要提示 ===${NC}"
+echo -e "${GREEN}服务正在后台运行，请等待Argo隧道建立完成${NC}"
+echo -e "${GREEN}如果使用临时隧道，域名会在几分钟后出现在日志中${NC}"
+echo -e "${GREEN}建议10-15分钟后再次查看订阅地址获取最新节点信息${NC}"
+echo -e "${GREEN}可以通过日志查看详细的启动过程和隧道信息${NC}"
+if [ "$WARP_ENABLED" = "true" ]; then
+    echo -e "${GREEN}WARP SOCKS5代理已启用，YouTube等网站将通过WARP访问${NC}"
+    echo -e "${GREEN}WARP状态检查: sudo warp-cli status${NC}"
+fi
+echo
+
+echo -e "${GREEN}部署完成！感谢使用！${NC}"        else
             echo -e "${YELLOW}正在安装 unzip...${NC}"
             sudo apt-get install -y unzip
             unzip -q python-xray-argo.zip
