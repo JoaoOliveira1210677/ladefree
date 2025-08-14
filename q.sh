@@ -280,64 +280,119 @@ echo -e "${BLUE}正在启动服务...${NC}"
 echo -e "${YELLOW}当前工作目录：$(pwd)${NC}"
 echo
 
-nohup python3 app.py > app.log 2>&1 &
+# 先清理可能存在的进程
+pkill -f "python3 app.py" > /dev/null 2>&1
+sleep 2
+
+# 启动服务并获取PID
+python3 app.py > app.log 2>&1 &
 APP_PID=$!
 
-echo -e "${BLUE}正在添加YouTube分流配置...${NC}"
+# 验证PID获取成功
+if [ -z "$APP_PID" ] || [ "$APP_PID" -eq 0 ]; then
+    echo -e "${RED}获取进程PID失败，尝试直接启动${NC}"
+    # 尝试直接启动
+    nohup python3 app.py > app.log 2>&1 &
+    sleep 2
+    # 通过进程名查找PID
+    APP_PID=$(pgrep -f "python3 app.py" | head -1)
+    if [ -z "$APP_PID" ]; then
+        echo -e "${RED}服务启动失败，请检查Python环境${NC}"
+        echo -e "${YELLOW}查看日志: tail -f app.log${NC}"
+        exit 1
+    fi
+fi
+
+echo -e "${GREEN}服务已在后台启动，PID: $APP_PID${NC}"
+echo -e "${YELLOW}日志文件: $(pwd)/app.log${NC}"
+
+echo -e "${BLUE}等待服务启动...${NC}"
 sleep 8
+
+# 检查服务是否正常运行
+if ! ps -p "$APP_PID" > /dev/null 2>&1; then
+    echo -e "${RED}服务启动失败，请检查日志${NC}"
+    echo -e "${YELLOW}查看日志: tail -f app.log${NC}"
+    echo -e "${YELLOW}检查端口占用: netstat -tlnp | grep :3000${NC}"
+    exit 1
+fi
+
+echo -e "${GREEN}服务运行正常${NC}"
+
+echo -e "${BLUE}正在添加YouTube分流配置...${NC}"
+sleep 5
 
 YOUTUBE_CONFIG_PATCH=$(cat << 'EOF'
 import json
 import os
+import time
 
-config_path = os.path.join('.cache', 'config.json')
+# 等待配置文件生成
+for i in range(30):
+    config_path = os.path.join('.cache', 'config.json')
+    if os.path.exists(config_path):
+        break
+    time.sleep(1)
+
 if os.path.exists(config_path):
-    with open(config_path, 'r') as f:
-        config = json.load(f)
-    
-    youtube_outbound = {
-        "protocol": "vmess",
-        "tag": "youtube",
-        "settings": {
-            "vnext": [{
-                "address": "172.233.171.224",
-                "port": 16416,
-                "users": [{
-                    "id": "8c1b9bea-cb51-43bb-a65c-0af31bbbf145",
-                    "alterId": 0
+    try:
+        with open(config_path, 'r') as f:
+            config = json.load(f)
+        
+        youtube_outbound = {
+            "protocol": "vmess",
+            "tag": "youtube",
+            "settings": {
+                "vnext": [{
+                    "address": "172.233.171.224",
+                    "port": 16416,
+                    "users": [{
+                        "id": "8c1b9bea-cb51-43bb-a65c-0af31bbbf145",
+                        "alterId": 0
+                    }]
                 }]
-            }]
-        },
-        "streamSettings": {
-            "network": "tcp"
+            },
+            "streamSettings": {
+                "network": "tcp"
+            }
         }
-    }
-    
-    youtube_rule = {
-        "type": "field",
-        "domain": [
-            "youtube.com",
-            "googlevideo.com",
-            "ytimg.com",
-            "gstatic.com",
-            "googleapis.com"
-        ],
-        "outboundTag": "youtube"
-    }
-    
-    if "routing" not in config:
-        config["routing"] = {
-            "domainStrategy": "IPIfNonMatch",
-            "rules": []
+        
+        youtube_rule = {
+            "type": "field",
+            "domain": [
+                "youtube.com",
+                "googlevideo.com",
+                "ytimg.com",
+                "gstatic.com",
+                "googleapis.com"
+            ],
+            "outboundTag": "youtube"
         }
-    
-    config["outbounds"].insert(1, youtube_outbound)
-    config["routing"]["rules"].insert(0, youtube_rule)
-    
-    with open(config_path, 'w') as f:
-        json.dump(config, f, indent=2)
-    
-    print("YouTube分流配置已添加")
+        
+        if "routing" not in config:
+            config["routing"] = {
+                "domainStrategy": "IPIfNonMatch",
+                "rules": []
+            }
+        
+        # 确保outbounds存在
+        if "outbounds" not in config:
+            config["outbounds"] = []
+        
+        # 添加YouTube出站
+        config["outbounds"].insert(1, youtube_outbound)
+        
+        # 添加路由规则
+        config["routing"]["rules"].insert(0, youtube_rule)
+        
+        with open(config_path, 'w') as f:
+            json.dump(config, f, indent=2)
+        
+        print("YouTube分流配置已添加")
+    except Exception as e:
+        print(f"配置YouTube分流时出错: {e}")
+else:
+    print("未找到配置文件，跳过YouTube分流配置")
 EOF
 )
 
@@ -345,24 +400,27 @@ echo "$YOUTUBE_CONFIG_PATCH" > add_youtube_config.py
 python3 add_youtube_config.py
 rm add_youtube_config.py
 
-pkill -f "python3 app.py" > /dev/null 2>&1
+# 重启服务以应用配置
+echo -e "${BLUE}重启服务以应用YouTube分流配置...${NC}"
+kill "$APP_PID" > /dev/null 2>&1
 sleep 3
-nohup python3 app.py > app.log 2>&1 &
-APP_PID=$!
-echo -e "${GREEN}YouTube分流配置已生效，服务已重启${NC}"
 
-echo -e "${GREEN}服务已在后台启动，PID: $APP_PID${NC}"
-echo -e "${YELLOW}日志文件: $(pwd)/app.log${NC}"
+python3 app.py > app.log 2>&1 &
+NEW_PID=$!
 
-echo -e "${BLUE}等待服务启动...${NC}"
-sleep 10
-
-if [ -n "$APP_PID" ] && kill -0 "$APP_PID" 2>/dev/null; then
-    echo -e "${GREEN}服务运行正常${NC}"
+if [ -n "$NEW_PID" ] && [ "$NEW_PID" -ne 0 ]; then
+    APP_PID=$NEW_PID
+    echo -e "${GREEN}YouTube分流配置已生效，服务已重启，PID: $APP_PID${NC}"
 else
-    echo -e "${RED}服务启动失败，请检查日志${NC}"
-    echo -e "${YELLOW}查看日志: tail -f app.log${NC}"
-    exit 1
+    # 备用方案：查找进程
+    sleep 2
+    APP_PID=$(pgrep -f "python3 app.py" | head -1)
+    if [ -n "$APP_PID" ]; then
+        echo -e "${GREEN}服务重启成功，PID: $APP_PID${NC}"
+    else
+        echo -e "${RED}服务重启失败${NC}"
+        exit 1
+    fi
 fi
 
 SERVICE_PORT=$(grep "PORT = int" app.py | grep -o "or [0-9]*" | cut -d" " -f2)
