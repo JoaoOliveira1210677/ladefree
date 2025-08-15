@@ -1,66 +1,56 @@
 #!/usr/bin/env python3
-# -*- coding: utf-8 -*-
-"""
-定时请求脚本
-每两分钟请求一次指定的URL，支持后台运行
-默认请求谷歌网站
-"""
-
 import requests
 import time
 import sys
-import signal
-import logging
 from datetime import datetime
-import argparse
 
-class PeriodicRequester:
-    def __init__(self, url="https://www.google.com", interval=120):
-        self.url = url
-        self.interval = interval  # 间隔时间（秒）
-        self.running = True
-        self.session = requests.Session()
+def log_message(message):
+    """打印带时间戳的消息"""
+    timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+    print(f"{timestamp} - {message}")
+
+def make_request(url):
+    """发起HTTP请求"""
+    try:
+        response = requests.get(url, timeout=30)
+        status_code = response.status_code
+        response_time = response.elapsed.total_seconds()
         
-        # 设置请求头，模拟浏览器
-        self.session.headers.update({
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
-        })
-        
-        # 设置日志
-        self.setup_logging()
-        
-    def setup_logging(self):
-        """设置日志配置"""
-        logging.basicConfig(
-            level=logging.INFO,
-            format='%(asctime)s - %(levelname)s - %(message)s',
-            handlers=[
-                logging.FileHandler('request_log.txt', encoding='utf-8'),
-                logging.StreamHandler(sys.stdout)
-            ]
-        )
-        self.logger = logging.getLogger(__name__)
-    
-    def signal_handler(self, signum, frame):
-        """处理退出信号"""
-        self.logger.info(f"接收到信号 {signum}，准备退出...")
-        self.running = False
-    
-    def make_request(self):
-        """发起HTTP请求"""
-        try:
-            response = self.session.get(self.url, timeout=30)
-            status_code = response.status_code
-            response_time = response.elapsed.total_seconds()
+        if status_code == 200:
+            log_message(f"✓ 请求成功 | URL: {url} | 状态码: {status_code} | 响应时间: {response_time:.2f}s")
+        else:
+            log_message(f"⚠ 请求异常 | URL: {url} | 状态码: {status_code}")
             
-            if status_code == 200:
-                self.logger.info(f"✓ 请求成功 | URL: {self.url} | 状态码: {status_code} | 响应时间: {response_time:.2f}s")
-            else:
-                self.logger.warning(f"⚠ 请求异常 | URL: {self.url} | 状态码: {status_code} | 响应时间: {response_time:.2f}s")
-                
-        except requests.exceptions.RequestException as e:
-            self.logger.error(f"✗ 请求失败 | URL: {self.url} | 错误: {str(e)}")
-        except Exception as e:
+    except Exception as e:
+        log_message(f"✗ 请求失败 | URL: {url} | 错误: {str(e)}")
+
+def main():
+    # 默认URL，可以通过命令行参数修改
+    url = sys.argv[1] if len(sys.argv) > 1 else "https://www.google.com"
+    interval = 120  # 2分钟
+    
+    log_message(f"开始定时请求服务")
+    log_message(f"目标URL: {url}")
+    log_message(f"请求间隔: {interval}秒")
+    log_message(f"按 Ctrl+C 停止服务")
+    
+    count = 0
+    
+    try:
+        while True:
+            count += 1
+            log_message(f"--- 第 {count} 次请求 ---")
+            
+            make_request(url)
+            
+            log_message(f"等待 {interval} 秒...")
+            time.sleep(interval)
+            
+    except KeyboardInterrupt:
+        log_message("服务已停止")
+
+if __name__ == "__main__":
+    main()        except Exception as e:
             self.logger.error(f"✗ 未知错误 | {str(e)}")
     
     def run(self):
