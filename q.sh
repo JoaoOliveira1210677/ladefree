@@ -95,22 +95,36 @@ show_keepalive_status() {
     # 显示统计信息
     if [ -f "$HOME/.xray_keepalive.log" ]; then
         echo -e "${YELLOW}保活统计信息:${NC}"
-        TOTAL_REQUESTS=$(grep -c "保活请求" "$HOME/.xray_keepalive.log" 2>/dev/null || echo "0")
-        SUCCESS_REQUESTS=$(grep -c "保活成功" "$HOME/.xray_keepalive.log" 2>/dev/null || echo "0")
-        FAILED_REQUESTS=$(grep -c "保活失败" "$HOME/.xray_keepalive.log" 2>/dev/null || echo "0")
+        
+        # 使用更安全的统计方法
+        TOTAL_REQUESTS=$(grep -c "保活请求" "$HOME/.xray_keepalive.log" 2>/dev/null)
+        SUCCESS_REQUESTS=$(grep -c "保活成功" "$HOME/.xray_keepalive.log" 2>/dev/null)
+        FAILED_REQUESTS=$(grep -c "保活失败" "$HOME/.xray_keepalive.log" 2>/dev/null)
+        
+        # 确保变量有值
+        TOTAL_REQUESTS=${TOTAL_REQUESTS:-0}
+        SUCCESS_REQUESTS=${SUCCESS_REQUESTS:-0}
+        FAILED_REQUESTS=${FAILED_REQUESTS:-0}
         
         echo -e "总请求次数: ${BLUE}$TOTAL_REQUESTS${NC}"
         echo -e "成功次数: ${GREEN}$SUCCESS_REQUESTS${NC}"
         echo -e "失败次数: ${RED}$FAILED_REQUESTS${NC}"
         
-        if [ "$TOTAL_REQUESTS" -gt 0 ]; then
+        # 安全计算成功率
+        if [ "$TOTAL_REQUESTS" -gt 0 ] && [ "$SUCCESS_REQUESTS" -ge 0 ] && [ "$FAILED_REQUESTS" -ge 0 ]; then
             SUCCESS_RATE=$((SUCCESS_REQUESTS * 100 / TOTAL_REQUESTS))
             echo -e "成功率: ${GREEN}${SUCCESS_RATE}%${NC}"
+        else
+            echo -e "成功率: ${YELLOW}暂无数据${NC}"
         fi
         
         echo
         echo -e "${YELLOW}最近5次保活记录:${NC}"
-        tail -n 5 "$HOME/.xray_keepalive.log" 2>/dev/null || echo "无记录"
+        if [ -s "$HOME/.xray_keepalive.log" ]; then
+            tail -n 5 "$HOME/.xray_keepalive.log" 2>/dev/null || echo "无记录"
+        else
+            echo "日志文件为空"
+        fi
     else
         echo -e "${YELLOW}未找到保活日志文件${NC}"
     fi
