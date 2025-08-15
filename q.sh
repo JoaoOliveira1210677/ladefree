@@ -1,40 +1,8 @@
-#!/bin/bash
-
-# 颜色定义
-RED='\033[0;31m'
-GREEN='\033[0;32m'
-YELLOW='\033[1;33m'
-BLUE='\033[0;34m'
-PURPLE='\033[0;35m'
-CYAN='\033[0;36m'
-NC='\033[0m'
-
-# 文件路径定义
-NODE_INFO_FILE="$HOME/.xray_nodes_info"
-KEEPALIVE_LOG_FILE="$HOME/.xray_keepalive.log"
-
-# 函数：生成UUID
-generate_uuid() {
-    if command -v uuidgen &> /dev/null; then
-        uuidgen | tr '[:upper:]' '[:lower:]'
-    elif command -v python3 &> /dev/null; then
-        python3 -c "import uuid; print(str(uuid.uuid4()))"
-    else
-        hexdump -n 16 -e '4/4 "%08X" 1 "\n"' /dev/urandom | sed 's/\(..\)\(..\)\(..\)\(..\)\(..\)\(..\)\(..\)\(..\)\(..\)\(..\)\(..\)\(..\)\(..\)\(..\)\(..\)\(..\)/\1\2\3\4-\5\6-\7\8-\9\10-\11\12\13\14\15\16/' | tr '[:upper:]' '[:lower:]'
-    fi
-}
-
-# 函数：查看节点信息
-show_node_info() {
-    if [ -f "$NODE_INFO_FILE" ]; then
-        echo -e "${GREEN}========================================${NC}"
-        echo -e "${GREEN}           节点信息查看               ${NC}"
-        echo -e "${GREEN}========================================${NC}"
-        echo
-        cat "$NODE_INFO_FILE"
-        echo
-    else
-        echo -e "${RED}未找到节点信息文件${NC}"
+1) 自动保活隧道域名 (推荐)
+2) 自定义保活地址
+3) 不启用保活
+请选择 (1/2/3): 1
+将自动保活隧道域名        echo -e "${RED}未找到节点信息文件${NC}"
         echo -e "${YELLOW}请先运行部署脚本生成节点信息${NC}"
     fi
 }
