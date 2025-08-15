@@ -44,6 +44,7 @@ echo
 echo -e "${BLUE}基于项目: ${YELLOW}https://github.com/eooce/python-xray-argo${NC}"
 echo -e "${BLUE}脚本仓库: ${YELLOW}https://github.com/byJoey/free-vps-py${NC}"
 echo -e "${BLUE}TG交流群: ${YELLOW}https://t.me/+ft-zI76oovgwNmRh${NC}"
+echo -e "${RED}脚本作者YouTube: ${YELLOW}https://www.youtube.com/@joeyblog${NC}"
 echo
 echo -e "${GREEN}本脚本基于 eooce 大佬的 Python Xray Argo 项目开发${NC}"
 echo -e "${GREEN}提供极速和完整两种配置模式，简化部署流程${NC}"
@@ -55,7 +56,7 @@ echo -e "${YELLOW}请选择操作:${NC}"
 echo -e "${BLUE}1) 极速模式 - 只修改UUID并启动${NC}"
 echo -e "${BLUE}2) 完整模式 - 详细配置所有选项${NC}"
 echo -e "${BLUE}3) 查看节点信息 - 显示已保存的节点信息${NC}"
-echo -e "${BLUE}4) 查看保活状态 - 检查任务运行并查看返回内容${NC}"
+echo -e "${BLUE}4) 查看保活状态 - 检查Hugging Face API保活状态${NC}"
 echo
 read -p "请输入选择 (1/2/3/4): " MODE_CHOICE
 
@@ -93,15 +94,13 @@ if [ "$MODE_CHOICE" = "3" ]; then
     fi
 fi
 
-# 新增：查看保活状态的逻辑
 if [ "$MODE_CHOICE" = "4" ]; then
     echo
     echo -e "${GREEN}========================================${NC}"
-    echo -e "${GREEN}                    自动保活状态检查                    ${NC}"
+    echo -e "${GREEN}               Hugging Face API 保活状态检查              ${NC}"
     echo -e "${GREEN}========================================${NC}"
     echo
     
-    # 切换到项目目录进行检查
     if [ -d "$PROJECT_DIR_NAME" ]; then
         cd "$PROJECT_DIR_NAME"
     fi
@@ -112,26 +111,19 @@ if [ "$MODE_CHOICE" = "4" ]; then
         echo -e "服务状态: ${GREEN}运行中${NC}"
         echo -e "进程PID: ${BLUE}$KEEPALIVE_PID${NC}"
         if [ -f "keep_alive_task.sh" ]; then
-            TARGET_URL=$(grep 'curl' keep_alive_task.sh | head -1 | cut -d '"' -f2)
-            echo -e "目标URL: ${YELLOW}$TARGET_URL${NC}"
-        else
-            echo -e "${RED}警告：找不到 keep_alive_task.sh 文件，无法确认目标URL。${NC}"
+            REPO_ID=$(grep 'huggingface.co/api/models/' keep_alive_task.sh | head -1 | sed -n 's|.*api/models/\([^"]*\).*|\1|p')
+            echo -e "目标仓库: ${YELLOW}$REPO_ID${NC}"
         fi
 
-        echo -e "\n${YELLOW}--- 最近一次请求返回内容 ---${NC}"
-        if [ -f "keep_alive_response.log" ]; then
-           TIMESTAMP=$(stat -c %y keep_alive_response.log | cut -d'.' -f1)
-           echo -e "${BLUE}内容获取时间: $TIMESTAMP${NC}"
-           echo "----------------------------------------"
-           cat keep_alive_response.log
-           echo
-           echo "----------------------------------------"
+        echo -e "\n${YELLOW}--- 最近一次保活状态 ---${NC}"
+        if [ -f "keep_alive_status.log" ]; then
+           cat keep_alive_status.log
         else
-           echo -e "${YELLOW}尚未生成返回内容日志，请稍等片刻(最多2分钟)后重试...${NC}"
+           echo -e "${YELLOW}尚未生成状态日志，请稍等片刻(最多2分钟)后重试...${NC}"
         fi
     else
         echo -e "服务状态: ${RED}未运行${NC}"
-        echo -e "${YELLOW}提示: 您可能尚未部署服务或未在部署时设置保活URL。${NC}"
+        echo -e "${YELLOW}提示: 您可能尚未部署服务或未在部署时设置Hugging Face保活。${NC}"
     fi
     echo
     exit 0
@@ -145,7 +137,7 @@ if ! command -v python3 &> /dev/null; then
 fi
 
 if ! python3 -c "import requests" &> /dev/null; then
-    echo -e "${YELLOW}正在安装 Python 依赖...${NC}"
+    echo -e "${YELLOW}正在安装 Python 依赖: requests...${NC}"
     pip3 install requests
 fi
 
@@ -188,8 +180,40 @@ fi
 cp app.py app.py.backup
 echo -e "${YELLOW}已备份原始文件为 app.py.backup${NC}"
 
-# 初始化保活URL变量
-KEEP_ALIVE_URL=""
+# 初始化保活变量
+KEEP_ALIVE_HF="false"
+HF_TOKEN=""
+HF_REPO_ID=""
+
+# 定义保活配置函数，避免代码重复
+configure_hf_keep_alive() {
+    echo
+    echo -e "${YELLOW}是否设置 Hugging Face API 自动保活? (y/n)${NC}"
+    read -p "> " SETUP_KEEP_ALIVE
+    if [ "$SETUP_KEEP_ALIVE" = "y" ] || [ "$SETUP_KEEP_ALIVE" = "Y" ]; then
+        echo -e "${YELLOW}请输入您的 Hugging Face 访问令牌 (Token):${NC}"
+        echo -e "${BLUE}（令牌用于API认证，输入时将不可见。请前往 https://huggingface.co/settings/tokens 获取）${NC}"
+        read -sp "Token: " HF_TOKEN_INPUT
+        echo
+        if [ -z "$HF_TOKEN_INPUT" ]; then
+            echo -e "${RED}错误：Token 不能为空。已取消保活设置。${NC}"
+            return
+        fi
+
+        echo -e "${YELLOW}请输入要访问的 Hugging Face 仓库ID (例如: openai-gpt 或 gpt2):${NC}"
+        read -p "Repo ID: " HF_REPO_ID_INPUT
+        if [ -z "$HF_REPO_ID_INPUT" ]; then
+            echo -e "${RED}错误：仓库ID 不能为空。已取消保活设置。${NC}"
+            return
+        fi
+
+        HF_TOKEN="$HF_TOKEN_INPUT"
+        HF_REPO_ID="$HF_REPO_ID_INPUT"
+        KEEP_ALIVE_HF="true"
+        echo -e "${GREEN}Hugging Face API 保活已设置！${NC}"
+        echo -e "${GREEN}目标仓库: $HF_REPO_ID${NC}"
+    fi
+}
 
 if [ "$MODE_CHOICE" = "1" ]; then
     echo -e "${BLUE}=== 极速模式 ===${NC}"
@@ -208,26 +232,7 @@ if [ "$MODE_CHOICE" = "1" ]; then
     sed -i "s/CFIP = os.environ.get('CFIP', '[^']*')/CFIP = os.environ.get('CFIP', 'joeyblog.net')/" app.py
     echo -e "${GREEN}优选IP已自动设置为: joeyblog.net${NC}"
     
-    # --- 极速模式中的保活逻辑 ---
-    echo
-    echo -e "${YELLOW}是否设置自动保活 (每2分钟请求一次外部URL)? (y/n)${NC}"
-    read -p "> " SETUP_KEEP_ALIVE
-    if [ "$SETUP_KEEP_ALIVE" = "y" ] || [ "$SETUP_KEEP_ALIVE" = "Y" ]; then
-        echo -e "${YELLOW}请输入保活URL (必须是公开库或稳定网站的地址，留空则取消):${NC}"
-        read -p "> " KEEP_ALIVE_URL_INPUT
-        if [ -n "$KEEP_ALIVE_URL_INPUT" ]; then
-            if [[ "$KEEP_ALIVE_URL_INPUT" != http* ]]; then
-                echo -e "${RED}错误：URL格式不正确，必须以 http 或 https 开头。${NC}"
-                KEEP_ALIVE_URL=""
-            else
-                KEEP_ALIVE_URL="$KEEP_ALIVE_URL_INPUT"
-                echo -e "${GREEN}保活URL已设置为: $KEEP_ALIVE_URL${NC}"
-            fi
-        else
-            echo -e "${GREEN}已取消设置保活URL。${NC}"
-        fi
-    fi
-    # --- 保活逻辑结束 ---
+    configure_hf_keep_alive
     
     echo -e "${GREEN}YouTube分流已自动配置${NC}"
     echo
@@ -309,25 +314,7 @@ else
             echo -e "${GREEN}项目URL已设置${NC}"
         fi
 
-        # --- 完整模式中的保活逻辑 ---
-        echo -e "${YELLOW}是否设置自动保活 (每2分钟请求一次外部URL)? (y/n)${NC}"
-        read -p "> " SETUP_KEEP_ALIVE
-        if [ "$SETUP_KEEP_ALIVE" = "y" ] || [ "$SETUP_KEEP_ALIVE" = "Y" ]; then
-            echo -e "${YELLOW}请输入保活URL (必须是公开库或稳定网站的地址，留空则取消):${NC}"
-            read -p "> " KEEP_ALIVE_URL_INPUT
-            if [ -n "$KEEP_ALIVE_URL_INPUT" ]; then
-                if [[ "$KEEP_ALIVE_URL_INPUT" != http* ]]; then
-                    echo -e "${RED}错误：URL格式不正确，必须以 http 或 https 开头。${NC}"
-                    KEEP_ALIVE_URL=""
-                else
-                    KEEP_ALIVE_URL="$KEEP_ALIVE_URL_INPUT"
-                    echo -e "${GREEN}保活URL已设置为: $KEEP_ALIVE_URL${NC}"
-                fi
-            else
-                echo -e "${GREEN}已取消设置保活URL。${NC}"
-            fi
-        fi
-        # --- 保活逻辑结束 ---
+        configure_hf_keep_alive
 
         echo -e "${YELLOW}当前哪吒服务器: $(grep "NEZHA_SERVER = " app.py | cut -d"'" -f4)${NC}"
         read -p "请输入哪吒服务器地址 (留空保持不变): " NEZHA_SERVER_INPUT
@@ -388,8 +375,8 @@ echo -e "服务端口: $(grep "PORT = int" app.py | grep -o "or [0-9]*" | cut -d
 echo -e "优选IP: $(grep "CFIP = " app.py | cut -d"'" -f4)"
 echo -e "优选端口: $(grep "CFPORT = " app.py | cut -d"'" -f4)"
 echo -e "订阅路径: $(grep "SUB_PATH = " app.py | cut -d"'" -f4)"
-if [ -n "$KEEP_ALIVE_URL" ]; then
-    echo -e "保活URL: $KEEP_ALIVE_URL"
+if [ "$KEEP_ALIVE_HF" = "true" ]; then
+    echo -e "保活仓库: $HF_REPO_ID"
 fi
 echo -e "${YELLOW}========================${NC}"
 echo
@@ -661,12 +648,17 @@ echo -e "${YELLOW}日志文件: $(pwd)/app.log${NC}"
 
 # 如果设置了保活URL，则启动保活任务
 KEEPALIVE_PID=""
-if [ -n "$KEEP_ALIVE_URL" ]; then
-    echo -e "${BLUE}正在启动自动保活任务...${NC}"
+if [ "$KEEP_ALIVE_HF" = "true" ]; then
+    echo -e "${BLUE}正在创建并启动 Hugging Face API 保活任务...${NC}"
     # 创建保活任务脚本
     echo "#!/bin/bash" > keep_alive_task.sh
     echo "while true; do" >> keep_alive_task.sh
-    echo "    curl -s --connect-timeout 15 -o keep_alive_response.log \"$KEEP_ALIVE_URL\"" >> keep_alive_task.sh
+    echo "    status_code=\$(curl -s -o /dev/null -w \"%{http_code}\" --header \"Authorization: Bearer $HF_TOKEN\" \"https://huggingface.co/api/models/$HF_REPO_ID\")" >> keep_alive_task.sh
+    echo "    if [ \"\$status_code\" -eq 200 ]; then" >> keep_alive_task.sh
+    echo "        echo \"Hugging Face API 保活成功 (状态码: 200) - \$(date '+%Y-%m-%d %H:%M:%S')\" > keep_alive_status.log" >> keep_alive_task.sh
+    echo "    else" >> keep_alive_task.sh
+    echo "        echo \"Hugging Face API 保活失败 (状态码: \$status_code) - \$(date '+%Y-%m-%d %H:%M:%S')\" > keep_alive_status.log" >> keep_alive_task.sh
+    echo "    fi" >> keep_alive_task.sh
     echo "    sleep 120" >> keep_alive_task.sh
     echo "done" >> keep_alive_task.sh
     chmod +x keep_alive_task.sh
@@ -674,7 +666,7 @@ if [ -n "$KEEP_ALIVE_URL" ]; then
     # 使用nohup后台运行保活任务
     nohup ./keep_alive_task.sh >/dev/null 2>&1 &
     KEEPALIVE_PID=$!
-    echo -e "${GREEN}自动保活任务已启动 (PID: $KEEPALIVE_PID)。${NC}"
+    echo -e "${GREEN}Hugging Face API 保活任务已启动 (PID: $KEEPALIVE_PID)。${NC}"
 fi
 
 
@@ -826,9 +818,9 @@ $NODE_INFO
 重启主服务: kill $APP_PID && nohup python3 app.py > app.log 2>&1 &
 查看进程: ps aux | grep app.py"
 
-if [ -n "$KEEPALIVE_PID" ]; then
+if [ "$KEEP_ALIVE_HF" = "true" ]; then
     SAVE_INFO="${SAVE_INFO}
-停止保活服务: pkill -f keep_alive_task.sh && rm keep_alive_task.sh keep_alive_response.log"
+停止保活服务: pkill -f keep_alive_task.sh && rm keep_alive_task.sh keep_alive_status.log"
 fi
 
 SAVE_INFO="${SAVE_INFO}
