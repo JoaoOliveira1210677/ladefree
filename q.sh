@@ -1,297 +1,512 @@
-1) 自动保活隧道域名 (推荐)
-2) 自定义保活地址
-3) 不启用保活
-请选择 (1/2/3): 1
-将自动保活隧道域名        echo -e "${RED}未找到节点信息文件${NC}"
+#!/bin/bash
+
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+BLUE='\033[0;34m'
+NC='\033[0m'
+
+NODE_INFO_FILE="$HOME/.xray_nodes_info"
+KEEPALIVE_CONFIG_FILE="$HOME/.xray_keepalive_config"
+
+# 如果是-v参数，直接查看节点信息
+if [ "$1" = "-v" ]; then
+    if [ -f "$NODE_INFO_FILE" ]; then
+        echo -e "${GREEN}========================================${NC}"
+        echo -e "${GREEN}           节点信息查看               ${NC}"
+        echo -e "${GREEN}========================================${NC}"
+        echo
+        cat "$NODE_INFO_FILE"
+        echo
+    else
+        echo -e "${RED}未找到节点信息文件${NC}"
         echo -e "${YELLOW}请先运行部署脚本生成节点信息${NC}"
     fi
-}
+    exit 0
+fi
 
-# 函数：获取隧道域名
-get_tunnel_domain() {
-    local tunnel_domain=""
-    
-    # 方法1: 从节点信息文件获取
-    if [ -f "$NODE_INFO_FILE" ]; then
-        tunnel_domain=$(grep -o "host=[^&]*" "$NODE_INFO_FILE" | head -1 | cut -d"=" -f2 | sed 's/%2F/\//g')
-        if [ -n "$tunnel_domain" ]; then
-            echo "$tunnel_domain"
-            return 0
-        fi
-    fi
-    
-    # 方法2: 从cache目录的文件获取
-    if [ -f ".cache/list.txt" ]; then
-        tunnel_domain=$(grep -o "host=[^&]*" .cache/list.txt | head -1 | cut -d"=" -f2)
-        if [ -n "$tunnel_domain" ]; then
-            echo "$tunnel_domain"
-            return 0
-        fi
-    fi
-    
-    # 方法3: 从当前目录的list.txt获取
-    if [ -f "list.txt" ]; then
-        tunnel_domain=$(grep -o "host=[^&]*" list.txt | head -1 | cut -d"=" -f2)
-        if [ -n "$tunnel_domain" ]; then
-            echo "$tunnel_domain"
-            return 0
-        fi
-    fi
-    
-    # 方法4: 从base64解码的订阅内容获取
-    if [ -f ".cache/sub.txt" ]; then
-        local sub_content=$(cat .cache/sub.txt | base64 -d 2>/dev/null)
-        if [ -n "$sub_content" ]; then
-            tunnel_domain=$(echo "$sub_content" | grep -o "host=[^&]*" | head -1 | cut -d"=" -f2)
-            if [ -n "$tunnel_domain" ]; then
-                echo "$tunnel_domain"
-                return 0
-            fi
-        fi
-    fi
-    
-    return 1
-}
+# 如果是-k参数，管理保活配置
+if [ "$1" = "-k" ]; then
+    manage_keepalive
+    exit 0
+fi
 
-# 函数：手动测试保活
-test_keepalive() {
-    echo -e "${BLUE}正在测试保活...${NC}"
-    
-    local tunnel_domain=$(get_tunnel_domain)
-    
-    if [ -z "$tunnel_domain" ]; then
-        echo -e "${BLUE}从节点信息文件获取隧道域名...${NC}"
-        echo -e "${BLUE}从cache文件获取隧道域名...${NC}"
-        echo -e "${BLUE}从list.txt获取隧道域名...${NC}"
-        echo -e "${BLUE}从订阅文件解码获取隧道域名...${NC}"
-        echo -e "${YELLOW}⚠ 自动获取隧道域名失败${NC}"
-        echo -e "${BLUE}请手动输入隧道域名 (格式: xxx.trycloudflare.com):${NC}"
-        read -p "> " manual_domain
-        if [ -n "$manual_domain" ]; then
-            tunnel_domain="$manual_domain"
-            echo -e "${GREEN}✓ 使用手动输入的域名: ${YELLOW}$tunnel_domain${NC}"
-        fi
-    else
-        echo -e "${GREEN}✓ 自动获取到隧道域名: ${YELLOW}$tunnel_domain${NC}"
-    fi
-    
-    if [ -n "$tunnel_domain" ]; then
-        echo
-        echo -e "${BLUE}目标隧道域名: ${YELLOW}$tunnel_domain${NC}"
-        echo -e "${BLUE}发送保活请求...${NC}"
-        echo
-        
-        # 发送请求并获取详细信息
-        local start_time=$(date +%s)
-        local response=$(curl -s -w "\nHTTP状态码: %{http_code}\n总时间: %{time_total}s\n建立连接: %{time_connect}s\nSSL握手: %{time_appconnect}s\n" "https://$tunnel_domain" --max-time 15 2>&1)
-        local end_time=$(date +%s)
-        
-        echo -e "${CYAN}=== 保活测试结果 ===${NC}"
-        echo "$response"
-        echo
-        
-        local http_code=$(echo "$response" | grep "HTTP状态码:" | cut -d" " -f2)
-        local total_time=$(echo "$response" | grep "总时间:" | cut -d" " -f2)
-        
-        echo -e "${BLUE}测试时间: ${YELLOW}$(date)${NC}"
-        echo -e "${BLUE}请求耗时: ${YELLOW}$((end_time - start_time))秒${NC}"
-        
-        if [ "$http_code" = "200" ]; then
-            echo -e "${GREEN}✓ 保活测试成功 - 隧道正常响应${NC}"
-        elif [ "$http_code" = "404" ] || [ "$http_code" = "400" ]; then
-            echo -e "${GREEN}✓ 保活测试成功 - 隧道连接正常 (预期的错误码)${NC}"
-        elif [ "$http_code" = "000" ] || [ -z "$http_code" ]; then
-            echo -e "${RED}✗ 保活测试失败 - 连接超时或网络错误${NC}"
-        else
-            echo -e "${YELLOW}⚠ 保活测试部分成功 - 状态码: $http_code${NC}"
-        fi
-        
-        # 记录到保活日志
-        if [ -n "$http_code" ] && [ "$http_code" != "000" ]; then
-            echo "[$(date '+%Y-%m-%d %H:%M:%S')] 手动测试: 保活请求 https://$tunnel_domain" >> "$KEEPALIVE_LOG_FILE"
-            echo "[$(date '+%Y-%m-%d %H:%M:%S')] 手动测试: 保活成功 - 状态码 $http_code, 响应时间 ${total_time}s" >> "$KEEPALIVE_LOG_FILE"
-        else
-            echo "[$(date '+%Y-%m-%d %H:%M:%S')] 手动测试: 保活失败 - 连接超时或网络错误" >> "$KEEPALIVE_LOG_FILE"
-        fi
-    else
-        echo -e "${RED}✗ 无法获取隧道域名，请检查：${NC}"
-        echo -e "1. 服务是否正常启动"
-        echo -e "2. 节点信息是否已生成"
-        echo -e "3. Argo隧道是否建立成功"
-        echo
-        echo -e "${YELLOW}调试信息：${NC}"
-        echo -e "工作目录: $(pwd)"
-        echo -e "节点信息文件: $([ -f "$NODE_INFO_FILE" ] && echo "存在" || echo "不存在")"
-        echo -e "Cache文件: $([ -f ".cache/list.txt" ] && echo "存在" || echo "不存在")"
-        echo -e "List文件: $([ -f "list.txt" ] && echo "存在" || echo "不存在")"
-    fi
-}
+# 如果是-h参数，显示帮助信息
+if [ "$1" = "-h" ] || [ "$1" = "--help" ]; then
+    echo -e "${GREEN}========================================${NC}"
+    echo -e "${GREEN}       Python Xray Argo 部署脚本      ${NC}"
+    echo -e "${GREEN}========================================${NC}"
+    echo
+    echo -e "${BLUE}使用方法:${NC}"
+    echo -e "  bash $(basename $0) [选项]"
+    echo
+    echo -e "${BLUE}选项说明:${NC}"
+echo -e "  无参数     - 进入交互式部署菜单"
+echo -e "  -v         - 查看节点信息"
+echo -e "  -h, --help - 显示此帮助信息"
+echo
+echo -e "${BLUE}保活功能:${NC}"
+echo -e "  自动每2分钟curl请求节点host"
+echo -e "  自动从节点信息中提取host地址"
+echo -e "  支持HTTP和HTTPS两种协议"
+echo -e "  部署完成后自动启动"
+echo
+echo -e "${BLUE}示例:${NC}"
+echo -e "  bash $(basename $0) -v    # 查看节点信息"
+    echo
+    exit 0
+fi
 
-# 函数：查看保活状态
+# 显示保活状态函数
 show_keepalive_status() {
+    clear
     echo -e "${GREEN}========================================${NC}"
     echo -e "${GREEN}           保活状态监控               ${NC}"
     echo -e "${GREEN}========================================${NC}"
     echo
     
-    # 检查Python进程是否运行
-    local python_pid=$(pgrep -f "python3 app.py" | head -1)
-    if [ -n "$python_pid" ]; then
-        echo -e "${GREEN}✓ 服务状态: 运行中 (PID: $python_pid)${NC}"
+    # 检查保活进程
+    KEEPALIVE_PID=$(pgrep -f "xray_keepalive.sh" | head -1)
+    if [ -n "$KEEPALIVE_PID" ]; then
+        echo -e "${GREEN}✅ 保活服务运行中${NC}"
+        echo -e "进程PID: ${BLUE}$KEEPALIVE_PID${NC}"
         
-        # 检查工作目录
-        if [ -d "python-xray-argo" ]; then
-            cd python-xray-argo
-            echo -e "${GREEN}✓ 工作目录: $(pwd)${NC}"
-        else
-            echo -e "${YELLOW}⚠ 工作目录不存在，尝试查找...${NC}"
-            local work_dir=$(find $HOME -name "app.py" -path "*/python-xray-argo/*" -exec dirname {} \; 2>/dev/null | head -1)
-            if [ -n "$work_dir" ]; then
-                cd "$work_dir"
-                echo -e "${GREEN}✓ 找到工作目录: $(pwd)${NC}"
-            else
-                echo -e "${RED}✗ 未找到工作目录${NC}"
-                return 1
-            fi
-        fi
-        
-        # 检查配置文件
-        if [ -f "app.py" ]; then
-            local auto_access=$(grep "AUTO_ACCESS = " app.py | grep -o "'[^']*'" | tail -1 | tr -d "'")
-            local project_url=$(grep "PROJECT_URL = " app.py | cut -d"'" -f4)
-            local uuid=$(grep "UUID = " app.py | head -1 | cut -d"'" -f2)
-            
-            echo -e "${BLUE}当前配置:${NC}"
-            echo -e "  自动保活: ${YELLOW}${auto_access:-未设置}${NC}"
-            echo -e "  保活URL: ${YELLOW}${project_url:-未设置}${NC}"
-            echo -e "  UUID: ${YELLOW}${uuid}${NC}"
-            echo
-            
-            if [ "$auto_access" = "true" ]; then
-                echo -e "${GREEN}✓ 保活功能已启用${NC}"
-                
-                # 确保保活日志文件存在
-                if [ ! -f "$KEEPALIVE_LOG_FILE" ]; then
-                    touch "$KEEPALIVE_LOG_FILE"
-                    echo "[$(date '+%Y-%m-%d %H:%M:%S')] INFO: 保活日志文件初始化" >> "$KEEPALIVE_LOG_FILE"
-                    echo -e "${YELLOW}⚠ 保活日志文件不存在，已自动创建${NC}"
-                fi
-                
-                # 检查保活日志
-                if [ -f "$KEEPALIVE_LOG_FILE" ]; then
-                    echo -e "${BLUE}保活日志位置: ${YELLOW}$KEEPALIVE_LOG_FILE${NC}"
-                    
-                    # 显示最近的保活记录
-                    local log_lines=$(wc -l < "$KEEPALIVE_LOG_FILE" 2>/dev/null || echo "0")
-                    if [ "$log_lines" -gt 1 ]; then
-                        echo -e "${BLUE}最近保活记录:${NC}"
-                        tail -10 "$KEEPALIVE_LOG_FILE"
-                        echo
-                        
-                        # 统计保活成功率
-                        local total_requests=$(grep -c "保活请求" "$KEEPALIVE_LOG_FILE" 2>/dev/null || echo "0")
-                        local success_requests=$(grep -c "保活成功" "$KEEPALIVE_LOG_FILE" 2>/dev/null || echo "0")
-                        local failed_requests=$(grep -c "保活失败" "$KEEPALIVE_LOG_FILE" 2>/dev/null || echo "0")
-                        
-                        if [ "$total_requests" -gt 0 ]; then
-                            local success_rate=$((success_requests * 100 / total_requests))
-                            echo -e "${CYAN}保活统计:${NC}"
-                            echo -e "  总请求: ${YELLOW}$total_requests${NC}"
-                            echo -e "  成功: ${GREEN}$success_requests${NC}"
-                            echo -e "  失败: ${RED}$failed_requests${NC}"
-                            echo -e "  成功率: ${YELLOW}$success_rate%${NC}"
-                            echo
-                        fi
-                        
-                        # 显示最后一次保活时间
-                        local last_keepalive=$(tail -1 "$KEEPALIVE_LOG_FILE" 2>/dev/null | grep -o "^[0-9-]* [0-9:]*")
-                        if [ -n "$last_keepalive" ]; then
-                            echo -e "${BLUE}最后保活时间: ${YELLOW}$last_keepalive${NC}"
-                        fi
-                    else
-                        echo -e "${YELLOW}⚠ 暂无保活记录${NC}"
-                    fi
-                fi
-                
-                # 手动测试保活
-                echo
-                echo -e "${YELLOW}是否手动测试保活功能? (y/n)${NC}"
-                read -p "> " test_keepalive_choice
-                if [ "$test_keepalive_choice" = "y" ] || [ "$test_keepalive_choice" = "Y" ]; then
-                    test_keepalive
-                fi
-            else
-                echo -e "${YELLOW}⚠ 保活功能未启用${NC}"
-            fi
-        else
-            echo -e "${RED}✗ 配置文件不存在${NC}"
-        fi
-        
-        # 实时日志查看选项
-        echo
-        echo -e "${YELLOW}是否查看实时运行日志? (y/n)${NC}"
-        read -p "> " view_log_choice
-        if [ "$view_log_choice" = "y" ] || [ "$view_log_choice" = "Y" ]; then
-            if [ -f "app.log" ]; then
-                echo -e "${BLUE}实时日志 (按Ctrl+C退出):${NC}"
-                echo
-                tail -f app.log
-            else
-                echo -e "${RED}日志文件不存在${NC}"
-            fi
+        # 显示进程信息
+        if command -v ps &> /dev/null; then
+            echo -e "${YELLOW}进程详情:${NC}"
+            ps -p "$KEEPALIVE_PID" -o pid,ppid,cmd,etime,pcpu,pmem 2>/dev/null || echo "无法获取进程详情"
         fi
     else
-        echo -e "${RED}✗ 服务未运行${NC}"
-        echo -e "${YELLOW}使用脚本重新部署服务${NC}"
+        echo -e "${RED}❌ 保活服务未运行${NC}"
     fi
+    
+    echo
+    
+    # 显示配置文件信息
+    if [ -f "$KEEPALIVE_CONFIG_FILE" ]; then
+        echo -e "${BLUE}当前保活配置:${NC}"
+        cat "$KEEPALIVE_CONFIG_FILE"
+        echo
+    else
+        echo -e "${YELLOW}未找到保活配置文件${NC}"
+        echo -e "${BLUE}保活功能将自动使用节点host进行curl请求${NC}"
+    fi
+    
+    # 显示统计信息
+    if [ -f "$HOME/.xray_keepalive.log" ]; then
+        echo -e "${YELLOW}保活统计信息:${NC}"
+        TOTAL_REQUESTS=$(grep -c "保活请求" "$HOME/.xray_keepalive.log" 2>/dev/null || echo "0")
+        SUCCESS_REQUESTS=$(grep -c "保活成功" "$HOME/.xray_keepalive.log" 2>/dev/null || echo "0")
+        FAILED_REQUESTS=$(grep -c "保活失败" "$HOME/.xray_keepalive.log" 2>/dev/null || echo "0")
+        
+        echo -e "总请求次数: ${BLUE}$TOTAL_REQUESTS${NC}"
+        echo -e "成功次数: ${GREEN}$SUCCESS_REQUESTS${NC}"
+        echo -e "失败次数: ${RED}$FAILED_REQUESTS${NC}"
+        
+        if [ "$TOTAL_REQUESTS" -gt 0 ]; then
+            SUCCESS_RATE=$((SUCCESS_REQUESTS * 100 / TOTAL_REQUESTS))
+            echo -e "成功率: ${GREEN}${SUCCESS_RATE}%${NC}"
+        fi
+        
+        echo
+        echo -e "${YELLOW}最近5次保活记录:${NC}"
+        tail -n 5 "$HOME/.xray_keepalive.log" 2>/dev/null || echo "无记录"
+    else
+        echo -e "${YELLOW}未找到保活日志文件${NC}"
+    fi
+    
+    echo
+    echo -e "${BLUE}保活功能说明:${NC}"
+    echo -e "• 自动每2分钟向节点host发送curl请求"
+    echo -e "• 支持HTTP和HTTPS两种协议"
+    echo -e "• 自动从节点信息中提取host地址"
+    echo -e "• 无需手动配置，部署后自动启动"
+    
+    echo
+    read -p "按回车键返回主菜单..."
 }
 
-# 函数：查看实时日志
-show_real_time_logs() {
+# 显示实时日志函数
+show_realtime_logs() {
+    clear
     echo -e "${GREEN}========================================${NC}"
-    echo -e "${GREEN}           实时日志查看               ${NC}"
+    echo -e "${GREEN}           实时日志监控               ${NC}"
     echo -e "${GREEN}========================================${NC}"
     echo
     
-    # 查找工作目录
-    if [ -d "python-xray-argo" ]; then
-        cd python-xray-argo
-    else
-        local work_dir=$(find $HOME -name "app.py" -path "*/python-xray-argo/*" -exec dirname {} \; 2>/dev/null | head -1)
-        if [ -n "$work_dir" ]; then
-            cd "$work_dir"
-        else
-            echo -e "${RED}未找到工作目录${NC}"
-            return 1
+    echo -e "${YELLOW}选择要查看的日志:${NC}"
+    echo -e "${BLUE}1) 服务运行日志 (app.log)${NC}"
+    echo -e "${BLUE}2) 保活功能日志${NC}"
+    echo -e "${BLUE}3) 系统日志 (如果支持)${NC}"
+    echo -e "${BLUE}4) 返回主菜单${NC}"
+    echo
+    
+    read -p "请输入选择 (1-4): " LOG_CHOICE
+    
+    case $LOG_CHOICE in
+        1)
+            if [ -f "app.log" ]; then
+                echo -e "${GREEN}正在显示服务运行日志，按Ctrl+C退出...${NC}"
+                echo -e "${YELLOW}日志文件: $(pwd)/app.log${NC}"
+                echo
+                tail -f app.log
+            else
+                echo -e "${RED}未找到服务日志文件${NC}"
+                read -p "按回车键返回..."
+            fi
+            ;;
+        2)
+            if [ -f "$HOME/.xray_keepalive.log" ]; then
+                echo -e "${GREEN}正在显示保活功能日志，按Ctrl+C退出...${NC}"
+                echo -e "${YELLOW}日志文件: $HOME/.xray_keepalive.log${NC}"
+                echo
+                tail -f "$HOME/.xray_keepalive.log"
+            else
+                echo -e "${RED}未找到保活日志文件${NC}"
+                read -p "按回车键返回..."
+            fi
+            ;;
+        3)
+            if command -v journalctl &> /dev/null; then
+                echo -e "${GREEN}正在显示系统日志，按Ctrl+C退出...${NC}"
+                echo -e "${YELLOW}显示最近的系统日志${NC}"
+                echo
+                journalctl -f -n 50
+            else
+                echo -e "${YELLOW}系统不支持journalctl${NC}"
+                read -p "按回车键返回..."
+            fi
+            ;;
+        4)
+            return
+            ;;
+        *)
+            echo -e "${RED}无效选择${NC}"
+            show_realtime_logs
+            ;;
+    esac
+}
+
+# 配置保活
+configure_keepalive() {
+    echo -e "${BLUE}=== 配置自动保活 ===${NC}"
+    echo
+    
+    # 检查是否有节点信息
+    if [ ! -f "$NODE_INFO_FILE" ]; then
+        echo -e "${RED}未找到节点信息文件，请先部署服务${NC}"
+        return
+    fi
+    
+    # 从节点信息中提取host
+    NODE_HOST=""
+    if [ -f "$NODE_INFO_FILE" ]; then
+        # 尝试从订阅链接中提取域名
+        SUB_LINK=$(grep "订阅地址:" "$NODE_INFO_FILE" | head -1 | cut -d' ' -f2)
+        if [ -n "$SUB_LINK" ]; then
+            NODE_HOST=$(echo "$SUB_LINK" | sed -n 's|http://\([^:]*\):.*|\1|p')
+        fi
+        
+        # 如果没找到，尝试从节点配置中提取
+        if [ -z "$NODE_HOST" ]; then
+            NODE_HOST=$(grep -o 'host=[^&]*' "$NODE_INFO_FILE" | head -1 | cut -d'=' -f2)
         fi
     fi
     
-    if [ -f "app.log" ]; then
-        echo -e "${BLUE}实时日志 (按Ctrl+C退出):${NC}"
-        echo
-        tail -f app.log
+    echo -e "${YELLOW}检测到的节点Host: ${BLUE}${NODE_HOST:-未检测到}${NC}"
+    echo
+    
+    read -p "请输入保活目标Host (留空使用检测到的): " KEEPALIVE_HOST
+    if [ -z "$KEEPALIVE_HOST" ]; then
+        KEEPALIVE_HOST="$NODE_HOST"
+    fi
+    
+    if [ -z "$KEEPALIVE_HOST" ]; then
+        echo -e "${RED}无法确定保活目标，请手动输入${NC}"
+        read -p "请输入保活目标Host: " KEEPALIVE_HOST
+        if [ -z "$KEEPALIVE_HOST" ]; then
+            echo -e "${RED}保活目标不能为空${NC}"
+            return
+        fi
+    fi
+    
+    read -p "请输入保活间隔(分钟，默认30): " KEEPALIVE_INTERVAL
+    if [ -z "$KEEPALIVE_INTERVAL" ]; then
+        KEEPALIVE_INTERVAL=30
+    fi
+    
+    read -p "请输入保活超时时间(秒，默认10): " KEEPALIVE_TIMEOUT
+    if [ -z "$KEEPALIVE_TIMEOUT" ]; then
+        KEEPALIVE_TIMEOUT=10
+    fi
+    
+    read -p "是否启用日志记录? (y/n，默认y): " ENABLE_LOGGING
+    if [ -z "$ENABLE_LOGGING" ] || [ "$ENABLE_LOGGING" = "y" ] || [ "$ENABLE_LOGGING" = "Y" ]; then
+        ENABLE_LOGGING="true"
     else
-        echo -e "${RED}日志文件不存在${NC}"
+        ENABLE_LOGGING="false"
+    fi
+    
+    # 保存配置
+    cat > "$KEEPALIVE_CONFIG_FILE" << EOF
+# Xray节点保活配置
+KEEPALIVE_HOST="$KEEPALIVE_HOST"
+KEEPALIVE_INTERVAL=$KEEPALIVE_INTERVAL
+KEEPALIVE_TIMEOUT=$KEEPALIVE_TIMEOUT
+ENABLE_LOGGING="$ENABLE_LOGGING"
+LOG_FILE="$HOME/.xray_keepalive.log"
+EOF
+    
+    echo -e "${GREEN}保活配置已保存${NC}"
+    
+    # 创建保活脚本
+    create_keepalive_script
+    
+    # 询问是否立即启动保活
+    echo
+    read -p "是否立即启动自动保活? (y/n): " START_NOW
+    if [ "$START_NOW" = "y" ] || [ "$START_NOW" = "Y" ]; then
+        start_keepalive_service
     fi
 }
 
-# 参数处理
-case "$1" in
-    "-v")
-        show_node_info
-        exit 0
-        ;;
-    "-s")
-        show_keepalive_status
-        exit 0
-        ;;
-    "-l")
-        show_real_time_logs
-        exit 0
-        ;;
-esac
+# 创建保活脚本
+create_keepalive_script() {
+    cat > "$HOME/xray_keepalive.sh" << 'EOF'
+#!/bin/bash
 
-# 主菜单
+# 日志文件
+LOG_FILE="$HOME/.xray_keepalive.log"
+
+# 日志函数
+log_message() {
+    echo "[$(date '+%Y-%m-%d %H:%M:%S')] $1" >> "$LOG_FILE"
+    echo "$1"
+}
+
+# 获取节点host
+get_node_host() {
+    # 从节点信息文件中提取host
+    if [ -f "$HOME/.xray_nodes_info" ]; then
+        # 尝试从订阅链接中提取域名
+        SUB_LINK=$(grep "订阅地址:" "$HOME/.xray_nodes_info" | head -1 | cut -d' ' -f2)
+        if [ -n "$SUB_LINK" ]; then
+            NODE_HOST=$(echo "$SUB_LINK" | sed -n 's|http://\([^:]*\):.*|\1|p')
+            if [ -n "$NODE_HOST" ]; then
+                echo "$NODE_HOST"
+                return 0
+            fi
+        fi
+        
+        # 如果没找到，尝试从节点配置中提取
+        NODE_HOST=$(grep -o 'host=[^&]*' "$HOME/.xray_nodes_info" | head -1 | cut -d'=' -f2)
+        if [ -n "$NODE_HOST" ]; then
+            echo "$NODE_HOST"
+            return 0
+        fi
+    fi
+    
+    # 如果都没找到，返回默认值
+    echo "localhost"
+}
+
+# 保活函数 - 使用curl请求
+keepalive() {
+    local host="$1"
+    
+    log_message "保活请求: $host"
+    
+    # 尝试HTTP请求
+    if command -v curl &> /dev/null; then
+        if curl -s --connect-timeout 10 --max-time 15 "http://$host" > /dev/null 2>&1; then
+            log_message "保活成功: $host (HTTP)"
+            return 0
+        fi
+        
+        # 尝试HTTPS请求
+        if curl -s --connect-timeout 10 --max-time 15 "https://$host" > /dev/null 2>&1; then
+            log_message "保活成功: $host (HTTPS)"
+            return 0
+        fi
+    fi
+    
+    log_message "保活失败: $host"
+    return 1
+}
+
+# 主循环 - 每2分钟执行一次
+log_message "保活服务启动，每2分钟执行一次curl请求"
+log_message "正在获取节点host..."
+
+while true; do
+    NODE_HOST=$(get_node_host)
+    
+    if [ "$NODE_HOST" != "localhost" ]; then
+        keepalive "$NODE_HOST"
+    else
+        log_message "未找到节点host，等待下次检测..."
+    fi
+    
+    # 等待2分钟
+    sleep 120
+done
+EOF
+    
+    chmod +x "$HOME/xray_keepalive.sh"
+    echo -e "${GREEN}保活脚本已创建: $HOME/xray_keepalive.sh${NC}"
+}
+
+# 启动保活服务
+start_keepalive_service() {
+    echo -e "${BLUE}正在启动保活服务...${NC}"
+    
+    # 停止可能存在的保活进程
+    pkill -f "xray_keepalive.sh" > /dev/null 2>&1
+    sleep 2
+    
+    # 启动保活服务
+    nohup "$HOME/xray_keepalive.sh" > /dev/null 2>&1 &
+    KEEPALIVE_PID=$!
+    
+    if [ -n "$KEEPALIVE_PID" ] && ps -p "$KEEPALIVE_PID" > /dev/null 2>&1; then
+        echo -e "${GREEN}保活服务已启动，PID: $KEEPALIVE_PID${NC}"
+        
+        # 保存PID到配置文件
+        echo "KEEPALIVE_PID=$KEEPALIVE_PID" >> "$KEEPALIVE_CONFIG_FILE"
+        
+        # 创建systemd服务文件（如果支持）
+        create_systemd_service
+    else
+        echo -e "${RED}保活服务启动失败${NC}"
+    fi
+}
+
+# 创建systemd服务
+create_systemd_service() {
+    if command -v systemctl &> /dev/null; then
+        echo -e "${BLUE}正在创建systemd服务...${NC}"
+        
+        cat > /tmp/xray-keepalive.service << EOF
+[Unit]
+Description=Xray Node Keepalive Service
+After=network.target
+
+[Service]
+Type=simple
+User=$USER
+ExecStart=$HOME/xray_keepalive.sh
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target
+EOF
+        
+        if sudo cp /tmp/xray-keepalive.service /etc/systemd/system/; then
+            sudo systemctl daemon-reload
+            sudo systemctl enable xray-keepalive.service
+            echo -e "${GREEN}systemd服务已创建并启用${NC}"
+            echo -e "${YELLOW}管理命令:${NC}"
+            echo -e "  启动: sudo systemctl start xray-keepalive"
+            echo -e "  停止: sudo systemctl stop xray-keepalive"
+            echo -e "  状态: sudo systemctl status xray-keepalive"
+        else
+            echo -e "${YELLOW}无法创建systemd服务，将使用nohup方式运行${NC}"
+        fi
+        
+        rm -f /tmp/xray-keepalive.service
+    fi
+}
+
+# 执行保活
+execute_keepalive() {
+    if [ ! -f "$KEEPALIVE_CONFIG_FILE" ]; then
+        echo -e "${RED}未找到保活配置文件，请先配置${NC}"
+        return
+    fi
+    
+    source "$KEEPALIVE_CONFIG_FILE"
+    
+    echo -e "${BLUE}正在执行保活检测...${NC}"
+    echo -e "目标: ${KEEPALIVE_HOST}"
+    echo -e "超时: ${KEEPALIVE_TIMEOUT}秒"
+    echo
+    
+    # 执行一次保活检测
+    echo -e "${BLUE}正在执行保活检测...${NC}"
+    timeout 30 bash "$HOME/xray_keepalive.sh" test > /tmp/keepalive_test.log 2>&1
+    KEEPALIVE_EXIT_CODE=$?
+    
+    if [ $KEEPALIVE_EXIT_CODE -eq 0 ]; then
+        echo -e "${GREEN}保活检测成功${NC}"
+    else
+        echo -e "${YELLOW}保活检测完成${NC}"
+    fi
+    
+    echo -e "${BLUE}检测结果:${NC}"
+    cat /tmp/keepalive_test.log 2>/dev/null || echo "无检测结果"
+    
+    rm -f /tmp/keepalive_test.log
+}
+
+# 查看保活日志
+view_keepalive_logs() {
+    if [ -f "$HOME/.xray_keepalive.log" ]; then
+        echo -e "${BLUE}=== 保活日志 ===${NC}"
+        echo -e "${YELLOW}最近50行日志:${NC}"
+        tail -n 50 "$HOME/.xray_keepalive.log"
+        echo
+        echo -e "${BLUE}日志文件: $HOME/.xray_keepalive.log${NC}"
+    else
+        echo -e "${YELLOW}未找到保活日志文件${NC}"
+    fi
+}
+
+# 删除保活配置
+delete_keepalive_config() {
+    echo -e "${YELLOW}确定要删除保活配置吗? (y/n)${NC}"
+    read -p "> " CONFIRM_DELETE
+    
+    if [ "$CONFIRM_DELETE" = "y" ] || [ "$CONFIRM_DELETE" = "Y" ]; then
+        # 停止保活服务
+        if [ -f "$KEEPALIVE_CONFIG_FILE" ]; then
+            source "$KEEPALIVE_CONFIG_FILE"
+            if [ -n "$KEEPALIVE_PID" ]; then
+                kill "$KEEPALIVE_PID" > /dev/null 2>&1
+            fi
+        fi
+        
+        pkill -f "xray_keepalive.sh" > /dev/null 2>&1
+        
+        # 删除文件
+        rm -f "$KEEPALIVE_CONFIG_FILE"
+        rm -f "$HOME/xray_keepalive.sh"
+        rm -f "$HOME/.xray_keepalive.log"
+        
+        # 删除systemd服务
+        if command -v systemctl &> /dev/null; then
+            sudo systemctl stop xray-keepalive.service > /dev/null 2>&1
+            sudo systemctl disable xray-keepalive.service > /dev/null 2>&1
+            sudo rm -f /etc/systemd/system/xray-keepalive.service > /dev/null 2>&1
+            sudo systemctl daemon-reload > /dev/null 2>&1
+        fi
+        
+        echo -e "${GREEN}保活配置已删除${NC}"
+    else
+        echo -e "${BLUE}取消删除${NC}"
+    fi
+}
+
+generate_uuid() {
+    if command -v uuidgen &> /dev/null; then
+        uuidgen | tr '[:upper:]' '[:lower:]'
+    elif command -v python3 &> /dev/null; then
+        python3 -c "import uuid; print(str(uuid.uuid4()))"
+    else
+        hexdump -n 16 -e '4/4 "%08X" 1 "\n"' /dev/urandom | sed 's/\(..\)\(..\)\(..\)\(..\)\(..\)\(..\)\(..\)\(..\)\(..\)\(..\)\(..\)\(..\)\(..\)\(..\)\(..\)\(..\)/\1\2\3\4-\5\6-\7\8-\9\10-\11\12\13\14\15\16/' | tr '[:upper:]' '[:lower:]'
+    fi
+}
+
 clear
 
 echo -e "${GREEN}========================================${NC}"
@@ -306,6 +521,7 @@ echo -e "${GREEN}本脚本基于 eooce 大佬的 Python Xray Argo 项目开发${
 echo -e "${GREEN}提供极速和完整两种配置模式，简化部署流程${NC}"
 echo -e "${GREEN}支持自动UUID生成、后台运行、节点信息输出${NC}"
 echo -e "${GREEN}默认集成YouTube分流优化，支持交互式查看节点信息${NC}"
+echo -e "${GREEN}新增智能保活功能，自动检测节点状态${NC}"
 echo
 
 echo -e "${YELLOW}请选择操作:${NC}"
@@ -317,31 +533,46 @@ echo -e "${BLUE}5) 查看实时日志 - 显示服务运行日志${NC}"
 echo
 read -p "请输入选择 (1/2/3/4/5): " MODE_CHOICE
 
-# 处理选择
-case "$MODE_CHOICE" in
-    "3")
-        show_node_info
+if [ "$MODE_CHOICE" = "3" ]; then
+    if [ -f "$NODE_INFO_FILE" ]; then
+        echo
+        echo -e "${GREEN}========================================${NC}"
+        echo -e "${GREEN}           节点信息查看               ${NC}"
+        echo -e "${GREEN}========================================${NC}"
+        echo
+        cat "$NODE_INFO_FILE"
+        echo
         echo -e "${YELLOW}提示: 如需重新部署，请重新运行脚本选择模式1或2${NC}"
+    else
+        echo
+        echo -e "${RED}未找到节点信息文件${NC}"
+        echo -e "${YELLOW}请先运行部署脚本生成节点信息${NC}"
+        echo
+        echo -e "${BLUE}是否现在开始部署? (y/n)${NC}"
+        read -p "> " START_DEPLOY
+        if [ "$START_DEPLOY" = "y" ] || [ "$START_DEPLOY" = "Y" ]; then
+            echo -e "${YELLOW}请选择部署模式:${NC}"
+            echo -e "${BLUE}1) 极速模式${NC}"
+            echo -e "${BLUE}2) 完整模式${NC}"
+            read -p "请输入选择 (1/2): " MODE_CHOICE
+        else
+            echo -e "${GREEN}退出脚本${NC}"
+            exit 0
+        fi
+    fi
+    
+    if [ "$MODE_CHOICE" != "1" ] && [ "$MODE_CHOICE" != "2" ]; then
+        echo -e "${GREEN}退出脚本${NC}"
         exit 0
-        ;;
-    "4")
-        show_keepalive_status
-        exit 0
-        ;;
-    "5")
-        show_real_time_logs
-        exit 0
-        ;;
-    "1"|"2")
-        # 继续执行部署流程
-        ;;
-    *)
-        echo -e "${RED}无效选择，退出脚本${NC}"
-        exit 1
-        ;;
-esac
+    fi
+elif [ "$MODE_CHOICE" = "4" ]; then
+    show_keepalive_status
+    exit 0
+elif [ "$MODE_CHOICE" = "5" ]; then
+    show_realtime_logs
+    exit 0
+fi
 
-# 检查并安装依赖
 echo -e "${BLUE}检查并安装依赖...${NC}"
 if ! command -v python3 &> /dev/null; then
     echo -e "${YELLOW}正在安装 Python3...${NC}"
@@ -353,7 +584,6 @@ if ! python3 -c "import requests" &> /dev/null; then
     pip3 install requests
 fi
 
-# 下载项目
 PROJECT_DIR="python-xray-argo"
 if [ ! -d "$PROJECT_DIR" ]; then
     echo -e "${BLUE}下载完整仓库...${NC}"
@@ -394,9 +624,7 @@ fi
 cp app.py app.py.backup
 echo -e "${YELLOW}已备份原始文件为 app.py.backup${NC}"
 
-# 配置模式处理
 if [ "$MODE_CHOICE" = "1" ]; then
-    # 极速模式
     echo -e "${BLUE}=== 极速模式 ===${NC}"
     echo
     
@@ -415,42 +643,13 @@ if [ "$MODE_CHOICE" = "1" ]; then
     echo -e "${GREEN}YouTube分流已自动配置${NC}"
     
     echo
-    echo -e "${YELLOW}保活配置 (每30分钟请求一次保持隧道活跃):${NC}"
-    echo -e "${BLUE}1) 自动保活隧道域名 (推荐)${NC}"
-    echo -e "${BLUE}2) 自定义保活地址${NC}"
-    echo -e "${BLUE}3) 不启用保活${NC}"
-    read -p "请选择 (1/2/3): " KEEPALIVE_CHOICE
-    
-    case "$KEEPALIVE_CHOICE" in
-        "1")
-            sed -i "s/AUTO_ACCESS = os.environ.get('AUTO_ACCESS', '[^']*')/AUTO_ACCESS = os.environ.get('AUTO_ACCESS', 'true')/" app.py
-            echo -e "${GREEN}将自动保活隧道域名${NC}"
-            ;;
-        "2")
-            read -p "请输入自定义保活地址: " CUSTOM_KEEPALIVE_URL
-            if [ -n "$CUSTOM_KEEPALIVE_URL" ]; then
-                sed -i "s/AUTO_ACCESS = os.environ.get('AUTO_ACCESS', '[^']*')/AUTO_ACCESS = os.environ.get('AUTO_ACCESS', 'true')/" app.py
-                sed -i "s|PROJECT_URL = os.environ.get('PROJECT_URL', '[^']*')|PROJECT_URL = os.environ.get('PROJECT_URL', '$CUSTOM_KEEPALIVE_URL')|" app.py
-                echo -e "${GREEN}自定义保活地址已设置为: $CUSTOM_KEEPALIVE_URL${NC}"
-            else
-                echo -e "${YELLOW}未输入地址，保活已禁用${NC}"
-            fi
-            ;;
-        *)
-            echo -e "${YELLOW}保活已禁用${NC}"
-            ;;
-    esac
-    
-    echo
     echo -e "${GREEN}极速配置完成！正在启动服务...${NC}"
     echo
-
-elif [ "$MODE_CHOICE" = "2" ]; then
-    # 完整模式
+    
+else
     echo -e "${BLUE}=== 完整配置模式 ===${NC}"
     echo
     
-    # UUID配置
     echo -e "${YELLOW}当前UUID: $(grep "UUID = " app.py | head -1 | cut -d"'" -f2)${NC}"
     read -p "请输入新的 UUID (留空自动生成): " UUID_INPUT
     if [ -z "$UUID_INPUT" ]; then
@@ -460,7 +659,6 @@ elif [ "$MODE_CHOICE" = "2" ]; then
     sed -i "s/UUID = os.environ.get('UUID', '[^']*')/UUID = os.environ.get('UUID', '$UUID_INPUT')/" app.py
     echo -e "${GREEN}UUID 已设置为: $UUID_INPUT${NC}"
 
-    # 节点名称配置
     echo -e "${YELLOW}当前节点名称: $(grep "NAME = " app.py | head -1 | cut -d"'" -f4)${NC}"
     read -p "请输入节点名称 (留空保持不变): " NAME_INPUT
     if [ -n "$NAME_INPUT" ]; then
@@ -468,7 +666,6 @@ elif [ "$MODE_CHOICE" = "2" ]; then
         echo -e "${GREEN}节点名称已设置为: $NAME_INPUT${NC}"
     fi
 
-    # 端口配置
     echo -e "${YELLOW}当前服务端口: $(grep "PORT = int" app.py | grep -o "or [0-9]*" | cut -d" " -f2)${NC}"
     read -p "请输入服务端口 (留空保持不变): " PORT_INPUT
     if [ -n "$PORT_INPUT" ]; then
@@ -476,7 +673,6 @@ elif [ "$MODE_CHOICE" = "2" ]; then
         echo -e "${GREEN}端口已设置为: $PORT_INPUT${NC}"
     fi
 
-    # 优选IP配置
     echo -e "${YELLOW}当前优选IP: $(grep "CFIP = " app.py | cut -d"'" -f4)${NC}"
     read -p "请输入优选IP/域名 (留空使用默认 joeyblog.net): " CFIP_INPUT
     if [ -z "$CFIP_INPUT" ]; then
@@ -485,31 +681,100 @@ elif [ "$MODE_CHOICE" = "2" ]; then
     sed -i "s/CFIP = os.environ.get('CFIP', '[^']*')/CFIP = os.environ.get('CFIP', '$CFIP_INPUT')/" app.py
     echo -e "${GREEN}优选IP已设置为: $CFIP_INPUT${NC}"
 
-    # 高级选项
+    echo -e "${YELLOW}当前优选端口: $(grep "CFPORT = " app.py | cut -d"'" -f4)${NC}"
+    read -p "请输入优选端口 (留空保持不变): " CFPORT_INPUT
+    if [ -n "$CFPORT_INPUT" ]; then
+        sed -i "s/CFPORT = int(os.environ.get('CFPORT', '[^']*'))/CFPORT = int(os.environ.get('CFPORT', '$CFPORT_INPUT'))/" app.py
+        echo -e "${GREEN}优选端口已设置为: $CFPORT_INPUT${NC}"
+    fi
+
+    echo -e "${YELLOW}当前Argo端口: $(grep "ARGO_PORT = " app.py | cut -d"'" -f4)${NC}"
+    read -p "请输入 Argo 端口 (留空保持不变): " ARGO_PORT_INPUT
+    if [ -n "$ARGO_PORT_INPUT" ]; then
+        sed -i "s/ARGO_PORT = int(os.environ.get('ARGO_PORT', '[^']*'))/ARGO_PORT = int(os.environ.get('ARGO_PORT', '$ARGO_PORT_INPUT'))/" app.py
+        echo -e "${GREEN}Argo端口已设置为: $ARGO_PORT_INPUT${NC}"
+    fi
+
+    echo -e "${YELLOW}当前订阅路径: $(grep "SUB_PATH = " app.py | cut -d"'" -f4)${NC}"
+    read -p "请输入订阅路径 (留空保持不变): " SUB_PATH_INPUT
+    if [ -n "$SUB_PATH_INPUT" ]; then
+        sed -i "s/SUB_PATH = os.environ.get('SUB_PATH', '[^']*')/SUB_PATH = os.environ.get('SUB_PATH', '$SUB_PATH_INPUT')/" app.py
+        echo -e "${GREEN}订阅路径已设置为: $SUB_PATH_INPUT${NC}"
+    fi
+
     echo
     echo -e "${YELLOW}是否配置高级选项? (y/n)${NC}"
     read -p "> " ADVANCED_CONFIG
 
     if [ "$ADVANCED_CONFIG" = "y" ] || [ "$ADVANCED_CONFIG" = "Y" ]; then
-        # 保活配置
-        echo -e "${YELLOW}当前自动保活状态: $(grep "AUTO_ACCESS = " app.py | grep -o "'[^']*'" | tail -1 | tr -d "'")${NC}"
-        echo -e "${YELLOW}是否启用自动保活? (y/n)${NC}"
-        read -p "> " AUTO_ACCESS_INPUT
-        if [ "$AUTO_ACCESS_INPUT" = "y" ] || [ "$AUTO_ACCESS_INPUT" = "Y" ]; then
-            sed -i "s/AUTO_ACCESS = os.environ.get('AUTO_ACCESS', '[^']*')/AUTO_ACCESS = os.environ.get('AUTO_ACCESS', 'true')/" app.py
-            echo -e "${GREEN}自动保活已启用${NC}"
-        else
-            sed -i "s/AUTO_ACCESS = os.environ.get('AUTO_ACCESS', '[^']*')/AUTO_ACCESS = os.environ.get('AUTO_ACCESS', 'false')/" app.py
-            echo -e "${GREEN}自动保活已禁用${NC}"
+        echo -e "${YELLOW}当前上传URL: $(grep "UPLOAD_URL = " app.py | cut -d"'" -f4)${NC}"
+        read -p "请输入上传URL (留空保持不变): " UPLOAD_URL_INPUT
+        if [ -n "$UPLOAD_URL_INPUT" ]; then
+            sed -i "s|UPLOAD_URL = os.environ.get('UPLOAD_URL', '[^']*')|UPLOAD_URL = os.environ.get('UPLOAD_URL', '$UPLOAD_URL_INPUT')|" app.py
+            echo -e "${GREEN}上传URL已设置${NC}"
+        fi
+
+        echo -e "${YELLOW}当前项目URL: $(grep "PROJECT_URL = " app.py | cut -d"'" -f4)${NC}"
+        read -p "请输入项目URL (留空保持不变): " PROJECT_URL_INPUT
+        if [ -n "$PROJECT_URL_INPUT" ]; then
+            sed -i "s|PROJECT_URL = os.environ.get('PROJECT_URL', '[^']*')|PROJECT_URL = os.environ.get('PROJECT_URL', '$PROJECT_URL_INPUT')|" app.py
+            echo -e "${GREEN}项目URL已设置${NC}"
+        fi
+
+        echo -e "${YELLOW}注意: 自动保活功能已移至脚本管理，请使用选项4进行配置${NC}"
+
+        echo -e "${YELLOW}当前哪吒服务器: $(grep "NEZHA_SERVER = " app.py | cut -d"'" -f4)${NC}"
+        read -p "请输入哪吒服务器地址 (留空保持不变): " NEZHA_SERVER_INPUT
+        if [ -n "$NEZHA_SERVER_INPUT" ]; then
+            sed -i "s|NEZHA_SERVER = os.environ.get('NEZHA_SERVER', '[^']*')|NEZHA_SERVER = os.environ.get('NEZHA_SERVER', '$NEZHA_SERVER_INPUT')|" app.py
+            
+            echo -e "${YELLOW}当前哪吒端口: $(grep "NEZHA_PORT = " app.py | cut -d"'" -f4)${NC}"
+            read -p "请输入哪吒端口 (v1版本留空): " NEZHA_PORT_INPUT
+            if [ -n "$NEZHA_PORT_INPUT" ]; then
+                sed -i "s|NEZHA_PORT = os.environ.get('NEZHA_PORT', '[^']*')|NEZHA_PORT = os.environ.get('NEZHA_PORT', '$NEZHA_PORT_INPUT')|" app.py
+            fi
+            
+            echo -e "${YELLOW}当前哪吒密钥: $(grep "NEZHA_KEY = " app.py | cut -d"'" -f4)${NC}"
+            read -p "请输入哪吒密钥: " NEZHA_KEY_INPUT
+            if [ -n "$NEZHA_KEY_INPUT" ]; then
+                sed -i "s|NEZHA_KEY = os.environ.get('NEZHA_KEY', '[^']*')|NEZHA_KEY = os.environ.get('NEZHA_KEY', '$NEZHA_KEY_INPUT')|" app.py
+            fi
+            echo -e "${GREEN}哪吒配置已设置${NC}"
+        fi
+
+        echo -e "${YELLOW}当前Argo域名: $(grep "ARGO_DOMAIN = " app.py | cut -d"'" -f4)${NC}"
+        read -p "请输入 Argo 固定隧道域名 (留空保持不变): " ARGO_DOMAIN_INPUT
+        if [ -n "$ARGO_DOMAIN_INPUT" ]; then
+            sed -i "s|ARGO_DOMAIN = os.environ.get('ARGO_DOMAIN', '[^']*')|ARGO_DOMAIN = os.environ.get('ARGO_DOMAIN', '$ARGO_DOMAIN_INPUT')|" app.py
+            
+            echo -e "${YELLOW}当前Argo密钥: $(grep "ARGO_AUTH = " app.py | cut -d"'" -f4)${NC}"
+            read -p "请输入 Argo 固定隧道密钥: " ARGO_AUTH_INPUT
+            if [ -n "$ARGO_AUTH_INPUT" ]; then
+                sed -i "s|ARGO_AUTH = os.environ.get('ARGO_AUTH', '[^']*')|ARGO_AUTH = os.environ.get('ARGO_AUTH', '$ARGO_AUTH_INPUT')|" app.py
+            fi
+            echo -e "${GREEN}Argo固定隧道配置已设置${NC}"
+        fi
+
+        echo -e "${YELLOW}当前Bot Token: $(grep "BOT_TOKEN = " app.py | cut -d"'" -f4)${NC}"
+        read -p "请输入 Telegram Bot Token (留空保持不变): " BOT_TOKEN_INPUT
+        if [ -n "$BOT_TOKEN_INPUT" ]; then
+            sed -i "s|BOT_TOKEN = os.environ.get('BOT_TOKEN', '[^']*')|BOT_TOKEN = os.environ.get('BOT_TOKEN', '$BOT_TOKEN_INPUT')|" app.py
+            
+            echo -e "${YELLOW}当前Chat ID: $(grep "CHAT_ID = " app.py | cut -d"'" -f4)${NC}"
+            read -p "请输入 Telegram Chat ID: " CHAT_ID_INPUT
+            if [ -n "$CHAT_ID_INPUT" ]; then
+                sed -i "s|CHAT_ID = os.environ.get('CHAT_ID', '[^']*')|CHAT_ID = os.environ.get('CHAT_ID', '$CHAT_ID_INPUT')|" app.py
+            fi
+            echo -e "${GREEN}Telegram配置已设置${NC}"
         fi
     fi
     
     echo -e "${GREEN}YouTube分流已自动配置${NC}"
+
     echo
     echo -e "${GREEN}完整配置完成！${NC}"
 fi
 
-# 显示配置摘要
 echo -e "${YELLOW}=== 当前配置摘要 ===${NC}"
 echo -e "UUID: $(grep "UUID = " app.py | head -1 | cut -d"'" -f2)"
 echo -e "节点名称: $(grep "NAME = " app.py | head -1 | cut -d"'" -f4)"
@@ -526,44 +791,15 @@ echo
 
 # 修改Python文件添加YouTube分流到xray配置，并增加80端口节点
 echo -e "${BLUE}正在添加YouTube分流功能和80端口节点...${NC}"
-
-# 创建补丁脚本
 cat > youtube_patch.py << 'EOF'
-import re
-
 # 读取app.py文件
 with open('app.py', 'r', encoding='utf-8') as f:
     content = f.read()
 
-# 添加保活日志功能
-if 'import datetime' not in content:
-    content = content.replace('import asyncio', 'import asyncio\nimport datetime')
+# 找到原始配置并替换为包含YouTube分流的配置
+old_config = 'config ={"log":{"access":"/dev/null","error":"/dev/null","loglevel":"none",},"inbounds":[{"port":ARGO_PORT ,"protocol":"vless","settings":{"clients":[{"id":UUID ,"flow":"xtls-rprx-vision",},],"decryption":"none","fallbacks":[{"dest":3001 },{"path":"/vless-argo","dest":3002 },{"path":"/vmess-argo","dest":3003 },{"path":"/trojan-argo","dest":3004 },],},"streamSettings":{"network":"tcp",},},{"port":3001 ,"listen":"127.0.0.1","protocol":"vless","settings":{"clients":[{"id":UUID },],"decryption":"none"},"streamSettings":{"network":"ws","security":"none"}},{"port":3002 ,"listen":"127.0.0.1","protocol":"vless","settings":{"clients":[{"id":UUID ,"level":0 }],"decryption":"none"},"streamSettings":{"network":"ws","security":"none","wsSettings":{"path":"/vless-argo"}},"sniffing":{"enabled":True ,"destOverride":["http","tls","quic"],"metadataOnly":False }},{"port":3003 ,"listen":"127.0.0.1","protocol":"vmess","settings":{"clients":[{"id":UUID ,"alterId":0 }]},"streamSettings":{"network":"ws","wsSettings":{"path":"/vmess-argo"}},"sniffing":{"enabled":True ,"destOverride":["http","tls","quic"],"metadataOnly":False }},{"port":3004 ,"listen":"127.0.0.1","protocol":"trojan","settings":{"clients":[{"password":UUID },]},"streamSettings":{"network":"ws","security":"none","wsSettings":{"path":"/trojan-argo"}},"sniffing":{"enabled":True ,"destOverride":["http","tls","quic"],"metadataOnly":False }},],"outbounds":[{"protocol":"freedom","tag": "direct" },{"protocol":"blackhole","tag":"block"}]}'
 
-# 添加保活日志函数
-if 'def log_keepalive' not in content:
-    log_function = '''
-def log_keepalive(message, status="INFO"):
-    timestamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    log_message = f"[{timestamp}] {status}: {message}\\n"
-    keepalive_log_file = os.path.expanduser("~/.xray_keepalive.log")
-    try:
-        with open(keepalive_log_file, "a", encoding="utf-8") as f:
-            f.write(log_message)
-    except Exception as e:
-        print(f"写入保活日志失败: {e}")
-
-'''
-    # 在cleanup函数前插入日志函数
-    if 'def cleanup():' in content:
-        content = content.replace('def cleanup():', log_function + 'def cleanup():')
-    else:
-        # 如果没有cleanup函数，在文件末尾添加
-        content += log_function
-
-# 修改xray配置，添加YouTube分流
-old_config_pattern = r'config\s*=\s*{[^}]+}'
-if re.search(old_config_pattern, content):
-    new_config = '''config = {
+new_config = '''config = {
         "log": {
             "access": "/dev/null",
             "error": "/dev/null",
@@ -688,14 +924,47 @@ if re.search(old_config_pattern, content):
             ]
         }
     }'''
-    content = re.sub(old_config_pattern, new_config, content)
+
+# 替换配置
+content = content.replace(old_config, new_config)
 
 # 修改generate_links函数，添加80端口节点
-if 'async def generate_links' in content:
-    # 查找并替换generate_links函数
-    pattern = r'(async def generate_links\(argo_domain\):.*?)(\n\s*return sub_txt)'
-    if re.search(pattern, content, re.DOTALL):
-        new_generate_function = '''async def generate_links(argo_domain):
+old_generate_function = '''# Generate links and subscription content
+async def generate_links(argo_domain):
+    meta_info = subprocess.run(['curl', '-s', 'https://speed.cloudflare.com/meta'], capture_output=True, text=True)
+    meta_info = meta_info.stdout.split('"')
+    ISP = f"{meta_info[25]}-{meta_info[17]}".replace(' ', '_').strip()
+
+    time.sleep(2)
+    VMESS = {"v": "2", "ps": f"{NAME}-{ISP}", "add": CFIP, "port": CFPORT, "id": UUID, "aid": "0", "scy": "none", "net": "ws", "type": "none", "host": argo_domain, "path": "/vmess-argo?ed=2560", "tls": "tls", "sni": argo_domain, "alpn": "", "fp": "chrome"}
+ 
+    list_txt = f"""
+vless://{UUID}@{CFIP}:{CFPORT}?encryption=none&security=tls&sni={argo_domain}&fp=chrome&type=ws&host={argo_domain}&path=%2Fvless-argo%3Fed%3D2560#{NAME}-{ISP}
+  
+vmess://{ base64.b64encode(json.dumps(VMESS).encode('utf-8')).decode('utf-8')}
+
+trojan://{UUID}@{CFIP}:{CFPORT}?security=tls&sni={argo_domain}&fp=chrome&type=ws&host={argo_domain}&path=%2Ftrojan-argo%3Fed%3D2560#{NAME}-{ISP}
+    """
+    
+    with open(os.path.join(FILE_PATH, 'list.txt'), 'w', encoding='utf-8') as list_file:
+        list_file.write(list_txt)
+
+    sub_txt = base64.b64encode(list_txt.encode('utf-8')).decode('utf-8')
+    with open(os.path.join(FILE_PATH, 'sub.txt'), 'w', encoding='utf-8') as sub_file:
+        sub_file.write(sub_txt)
+        
+    print(sub_txt)
+    
+    print(f"{FILE_PATH}/sub.txt saved successfully")
+    
+    # Additional actions
+    send_telegram()
+    upload_nodes()
+  
+    return sub_txt'''
+
+new_generate_function = '''# Generate links and subscription content
+async def generate_links(argo_domain):
     meta_info = subprocess.run(['curl', '-s', 'https://speed.cloudflare.com/meta'], capture_output=True, text=True)
     meta_info = meta_info.stdout.split('"')
     ISP = f"{meta_info[25]}-{meta_info[17]}".replace(' ', '_').strip()
@@ -738,74 +1007,21 @@ trojan://{UUID}@{CFIP}:80?security=none&type=ws&host={argo_domain}&path=%2Ftroja
     upload_nodes()
   
     return sub_txt'''
-        content = re.sub(pattern, new_generate_function + r'\2', content, flags=re.DOTALL)
 
-# 添加增强的保活功能
-if 'async def auto_access():' in content:
-    enhanced_auto_access = '''async def auto_access():
-    """增强的自动保活函数"""
-    await asyncio.sleep(60)  # 等待60秒确保隧道建立
-    
-    while True:
-        try:
-            # 动态获取隧道域名
-            tunnel_domain = None
-            
-            # 尝试从多个位置获取隧道域名
-            for file_path in [os.path.join(FILE_PATH, 'list.txt'), 'list.txt']:
-                if os.path.exists(file_path):
-                    with open(file_path, 'r') as f:
-                        content_data = f.read()
-                        # 从vless链接中提取host参数
-                        import re
-                        host_match = re.search(r'host=([^&%]+)', content_data)
-                        if host_match:
-                            tunnel_domain = host_match.group(1)
-                            break
-            
-            if tunnel_domain:
-                access_url = f"https://{tunnel_domain}"
-            else:
-                access_url = PROJECT_URL
-            
-            if access_url and access_url != "":
-                log_keepalive(f"保活请求: {access_url}")
-                try:
-                    response = requests.get(access_url, timeout=60)
-                    if response.status_code in [200, 404, 400]:
-                        log_keepalive(f"保活成功: 状态码 {response.status_code}, 响应时间 {response.elapsed.total_seconds():.2f}s")
-                    else:
-                        log_keepalive(f"保活异常: 状态码 {response.status_code}", "WARN")
-                except requests.exceptions.Timeout:
-                    log_keepalive("保活失败: 请求超时", "ERROR")
-                except requests.exceptions.ConnectionError:
-                    log_keepalive("保活失败: 连接错误", "ERROR")
-                except Exception as e:
-                    log_keepalive(f"保活失败: {str(e)}", "ERROR")
-            else:
-                log_keepalive("保活跳过: 未配置URL", "WARN")
-                
-        except Exception as e:
-            log_keepalive(f"保活异常: {str(e)}", "ERROR")
-        
-        await asyncio.sleep(1800)  # 30分钟间隔'''
-    
-    # 替换原有的auto_access函数
-    pattern = r'async def auto_access\(\):.*?(?=\nasync def|\ndef |\nclass |\nif __name__|\Z)'
-    content = re.sub(pattern, enhanced_auto_access, content, flags=re.DOTALL)
+# 替换generate_links函数
+content = content.replace(old_generate_function, new_generate_function)
 
 # 写回文件
 with open('app.py', 'w', encoding='utf-8') as f:
     f.write(content)
 
-print("YouTube分流配置、80端口节点和增强保活日志功能已成功添加")
+print("YouTube分流配置和80端口节点已成功添加")
 EOF
 
-# 运行补丁
 python3 youtube_patch.py
 rm youtube_patch.py
 
-echo -e "${GREEN}YouTube分流、80端口节点和保活日志功能已集成${NC}"
+echo -e "${GREEN}YouTube分流和80端口节点已集成${NC}"
 
 # 先清理可能存在的进程
 pkill -f "python3 app.py" > /dev/null 2>&1
@@ -844,7 +1060,6 @@ fi
 
 echo -e "${GREEN}服务运行正常${NC}"
 
-# 获取配置信息
 SERVICE_PORT=$(grep "PORT = int" app.py | grep -o "or [0-9]*" | cut -d" " -f2)
 CURRENT_UUID=$(grep "UUID = " app.py | head -1 | cut -d"'" -f2)
 SUB_PATH_VALUE=$(grep "SUB_PATH = " app.py | cut -d"'" -f4)
@@ -904,7 +1119,6 @@ if [ -z "$NODE_INFO" ]; then
     exit 1
 fi
 
-# 部署完成显示
 echo
 echo -e "${GREEN}========================================${NC}"
 echo -e "${GREEN}           部署完成！                   ${NC}"
@@ -942,7 +1156,6 @@ echo -e "${GREEN}订阅链接:${NC}"
 echo "$NODE_INFO"
 echo
 
-# 保存节点信息
 SAVE_INFO="========================================
            节点信息保存               
 ========================================
@@ -978,60 +1191,71 @@ $NODE_INFO
 停止服务: kill $APP_PID
 重启服务: kill $APP_PID && nohup python3 app.py > app.log 2>&1 &
 查看进程: ps aux | grep python3
-查看节点: bash $0 -v
-保活状态: bash $0 -s
-实时日志: bash $0 -l
-
-=== 快捷命令说明 ===
-$0 -v     # 查看节点信息
-$0 -s     # 查看保活状态和统计
-$0 -l     # 查看实时日志
 
 === 分流说明 ===
 - 已集成YouTube分流优化到xray配置
 - YouTube相关域名自动走专用线路
-- 无需额外配置，透明分流
-- 已添加保活日志记录功能
-
-=== 保活监控 ===
-- 保活日志: $KEEPALIVE_LOG_FILE
-- 支持成功率统计和状态监控
-- 可手动测试保活功能"
+- 无需额外配置，透明分流"
 
 echo "$SAVE_INFO" > "$NODE_INFO_FILE"
 echo -e "${GREEN}节点信息已保存到 $NODE_INFO_FILE${NC}"
-echo -e "${YELLOW}使用以下命令可随时查看信息:${NC}"
-echo -e "${BLUE}  $0 -v${NC}  # 查看节点信息"
-echo -e "${BLUE}  $0 -s${NC}  # 查看保活状态"
-echo -e "${BLUE}  $0 -l${NC}  # 查看实时日志"
+echo -e "${YELLOW}使用脚本选择选项3可随时查看节点信息${NC}"
 
 echo -e "${YELLOW}=== 重要提示 ===${NC}"
 echo -e "${GREEN}部署已完成，节点信息已成功生成${NC}"
 echo -e "${GREEN}可以立即使用订阅地址添加到客户端${NC}"
 echo -e "${GREEN}YouTube分流已集成到xray配置，无需额外设置${NC}"
-echo -e "${GREEN}保活日志记录功能已启用，可监控连接状态${NC}"
 echo -e "${GREEN}服务将持续在后台运行${NC}"
 echo
 
-echo -e "${CYAN}=== 新增功能说明 ===${NC}"
-echo -e "${YELLOW}1. 保活状态监控:${NC}"
-echo -e "   - 实时查看保活请求状态和响应"
-echo -e "   - 统计保活成功率和失败次数"
-echo -e "   - 手动测试保活功能"
-echo -e "   - 显示最后保活时间"
-echo
-echo -e "${YELLOW}2. 日志实时统计:${NC}"
-echo -e "   - 保活日志自动记录到 $KEEPALIVE_LOG_FILE"
-echo -e "   - 包含时间戳、状态码、响应时间等详细信息"
-echo -e "   - 支持实时查看运行日志"
-echo
-echo -e "${YELLOW}3. 增强的管理界面:${NC}"
-echo -e "   - 新增选项4: 查看保活状态"
-echo -e "   - 新增选项5: 查看实时日志"
-echo -e "   - 支持命令行参数快速操作"
+echo -e "${YELLOW}=== 保活功能说明 ===${NC}"
+echo -e "${GREEN}新增智能保活功能，自动每2分钟curl请求节点host${NC}"
+echo -e "${BLUE}使用方法:${NC}"
+echo -e "  1. 运行脚本选择选项4查看保活状态"
+echo -e "  2. 选择选项5查看实时日志"
+echo -e "  3. 保活功能自动启动，无需手动配置"
+echo -e "  4. 自动从节点信息中提取host地址"
+echo -e "  5. 每2分钟执行一次HTTP/HTTPS请求"
+echo -e "  6. 支持日志记录和状态监控"
 echo
 
-echo -e "${GREEN}部署完成！感谢使用增强版脚本！${NC}"
+echo -e "${GREEN}部署完成！感谢使用！${NC}"
 
-# 脚本结束
+# 自动启动保活服务
+echo -e "${BLUE}正在启动保活服务...${NC}"
+if [ -f "$HOME/xray_keepalive.sh" ]; then
+    # 停止可能存在的保活进程
+    pkill -f "xray_keepalive.sh" > /dev/null 2>&1
+    sleep 2
+    
+    # 启动保活服务
+    nohup "$HOME/xray_keepalive.sh" > /dev/null 2>&1 &
+    KEEPALIVE_PID=$!
+    
+    if [ -n "$KEEPALIVE_PID" ] && ps -p "$KEEPALIVE_PID" > /dev/null 2>&1; then
+        echo -e "${GREEN}✅ 保活服务已启动，PID: $KEEPALIVE_PID${NC}"
+        echo -e "${BLUE}保活服务将每2分钟自动curl请求节点host${NC}"
+    else
+        echo -e "${YELLOW}⚠️  保活服务启动失败，请手动检查${NC}"
+    fi
+else
+    echo -e "${YELLOW}⚠️  保活脚本未找到，正在创建...${NC}"
+    create_keepalive_script
+    
+    # 启动保活服务
+    nohup "$HOME/xray_keepalive.sh" > /dev/null 2>&1 &
+    KEEPALIVE_PID=$!
+    
+    if [ -n "$KEEPALIVE_PID" ] && ps -p "$KEEPALIVE_PID" > /dev/null 2>&1; then
+        echo -e "${GREEN}✅ 保活服务已启动，PID: $KEEPALIVE_PID${NC}"
+        echo -e "${BLUE}保活服务将每2分钟自动curl请求节点host${NC}"
+    else
+        echo -e "${YELLOW}⚠️  保活服务启动失败${NC}"
+    fi
+fi
+
+echo
+echo -e "${GREEN}🎉 所有服务已启动完成！${NC}"
+
+# 退出脚本，避免重复执行
 exit 0
