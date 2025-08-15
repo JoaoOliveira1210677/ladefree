@@ -7,6 +7,7 @@ BLUE='\033[0;34m'
 NC='\033[0m'
 
 NODE_INFO_FILE="$HOME/.xray_nodes_info"
+PROJECT_DIR_NAME="python-xray-argo"
 
 # 如果是-v参数，直接查看节点信息
 if [ "$1" = "-v" ]; then
@@ -54,8 +55,9 @@ echo -e "${YELLOW}请选择操作:${NC}"
 echo -e "${BLUE}1) 极速模式 - 只修改UUID并启动${NC}"
 echo -e "${BLUE}2) 完整模式 - 详细配置所有选项${NC}"
 echo -e "${BLUE}3) 查看节点信息 - 显示已保存的节点信息${NC}"
+echo -e "${BLUE}4) 查看保活状态 - 检查任务运行并查看返回内容${NC}"
 echo
-read -p "请输入选择 (1/2/3): " MODE_CHOICE
+read -p "请输入选择 (1/2/3/4): " MODE_CHOICE
 
 if [ "$MODE_CHOICE" = "3" ]; then
     if [ -f "$NODE_INFO_FILE" ]; then
@@ -91,6 +93,51 @@ if [ "$MODE_CHOICE" = "3" ]; then
     fi
 fi
 
+# 新增：查看保活状态的逻辑
+if [ "$MODE_CHOICE" = "4" ]; then
+    echo
+    echo -e "${GREEN}========================================${NC}"
+    echo -e "${GREEN}                    自动保活状态检查                    ${NC}"
+    echo -e "${GREEN}========================================${NC}"
+    echo
+    
+    # 切换到项目目录进行检查
+    if [ -d "$PROJECT_DIR_NAME" ]; then
+        cd "$PROJECT_DIR_NAME"
+    fi
+
+    KEEPALIVE_PID=$(pgrep -f "keep_alive_task.sh")
+
+    if [ -n "$KEEPALIVE_PID" ]; then
+        echo -e "服务状态: ${GREEN}运行中${NC}"
+        echo -e "进程PID: ${BLUE}$KEEPALIVE_PID${NC}"
+        if [ -f "keep_alive_task.sh" ]; then
+            TARGET_URL=$(grep 'curl' keep_alive_task.sh | head -1 | cut -d '"' -f2)
+            echo -e "目标URL: ${YELLOW}$TARGET_URL${NC}"
+        else
+            echo -e "${RED}警告：找不到 keep_alive_task.sh 文件，无法确认目标URL。${NC}"
+        fi
+
+        echo -e "\n${YELLOW}--- 最近一次请求返回内容 ---${NC}"
+        if [ -f "keep_alive_response.log" ]; then
+           TIMESTAMP=$(stat -c %y keep_alive_response.log | cut -d'.' -f1)
+           echo -e "${BLUE}内容获取时间: $TIMESTAMP${NC}"
+           echo "----------------------------------------"
+           cat keep_alive_response.log
+           echo
+           echo "----------------------------------------"
+        else
+           echo -e "${YELLOW}尚未生成返回内容日志，请稍等片刻(最多2分钟)后重试...${NC}"
+        fi
+    else
+        echo -e "服务状态: ${RED}未运行${NC}"
+        echo -e "${YELLOW}提示: 您可能尚未部署服务或未在部署时设置保活URL。${NC}"
+    fi
+    echo
+    exit 0
+fi
+
+
 echo -e "${BLUE}检查并安装依赖...${NC}"
 if ! command -v python3 &> /dev/null; then
     echo -e "${YELLOW}正在安装 Python3...${NC}"
@@ -102,34 +149,33 @@ if ! python3 -c "import requests" &> /dev/null; then
     pip3 install requests
 fi
 
-PROJECT_DIR="python-xray-argo"
-if [ ! -d "$PROJECT_DIR" ]; then
+if [ ! -d "$PROJECT_DIR_NAME" ]; then
     echo -e "${BLUE}下载完整仓库...${NC}"
     if command -v git &> /dev/null; then
-        git clone https://github.com/eooce/python-xray-argo.git
+        git clone https://github.com/eooce/python-xray-argo.git "$PROJECT_DIR_NAME"
     else
         echo -e "${YELLOW}Git未安装，使用wget下载...${NC}"
         wget -q https://github.com/eooce/python-xray-argo/archive/refs/heads/main.zip -O python-xray-argo.zip
         if command -v unzip &> /dev/null; then
             unzip -q python-xray-argo.zip
-            mv python-xray-argo-main python-xray-argo
+            mv python-xray-argo-main "$PROJECT_DIR_NAME"
             rm python-xray-argo.zip
         else
             echo -e "${YELLOW}正在安装 unzip...${NC}"
             sudo apt-get install -y unzip
             unzip -q python-xray-argo.zip
-            mv python-xray-argo-main python-xray-argo
+            mv python-xray-argo-main "$PROJECT_DIR_NAME"
             rm python-xray-argo.zip
         fi
     fi
     
-    if [ $? -ne 0 ] || [ ! -d "$PROJECT_DIR" ]; then
+    if [ $? -ne 0 ] || [ ! -d "$PROJECT_DIR_NAME" ]; then
         echo -e "${RED}下载失败，请检查网络连接${NC}"
         exit 1
     fi
 fi
 
-cd "$PROJECT_DIR"
+cd "$PROJECT_DIR_NAME"
 
 echo -e "${GREEN}依赖安装完成！${NC}"
 echo
@@ -620,7 +666,7 @@ if [ -n "$KEEP_ALIVE_URL" ]; then
     # 创建保活任务脚本
     echo "#!/bin/bash" > keep_alive_task.sh
     echo "while true; do" >> keep_alive_task.sh
-    echo "    curl -s -o /dev/null \"$KEEP_ALIVE_URL\"" >> keep_alive_task.sh
+    echo "    curl -s --connect-timeout 15 -o keep_alive_response.log \"$KEEP_ALIVE_URL\"" >> keep_alive_task.sh
     echo "    sleep 120" >> keep_alive_task.sh
     echo "done" >> keep_alive_task.sh
     chmod +x keep_alive_task.sh
@@ -782,7 +828,7 @@ $NODE_INFO
 
 if [ -n "$KEEPALIVE_PID" ]; then
     SAVE_INFO="${SAVE_INFO}
-停止保活服务: pkill -f keep_alive_task.sh && rm keep_alive_task.sh"
+停止保活服务: pkill -f keep_alive_task.sh && rm keep_alive_task.sh keep_alive_response.log"
 fi
 
 SAVE_INFO="${SAVE_INFO}
@@ -806,49 +852,4 @@ echo
 echo -e "${GREEN}部署完成！感谢使用！${NC}"
 
 # 退出脚本，避免重复执行
-exit 0        self.logger.info(f"目标URL: {self.url}")
-        self.logger.info(f"请求间隔: {self.interval}秒")
-        self.logger.info(f"按 Ctrl+C 停止服务")
-        
-        request_count = 0
-        
-        while self.running:
-            try:
-                request_count += 1
-                self.logger.info(f"--- 第 {request_count} 次请求 ---")
-                
-                # 发起请求
-                self.make_request()
-                
-                # 等待指定间隔时间
-                if self.running:
-                    self.logger.info(f"等待 {self.interval} 秒后进行下次请求...")
-                    time.sleep(self.interval)
-                    
-            except KeyboardInterrupt:
-                break
-            except Exception as e:
-                self.logger.error(f"运行时错误: {str(e)}")
-                if self.running:
-                    time.sleep(5)  # 出错后等待5秒再继续
-        
-        self.logger.info("定时请求服务已停止")
-
-def main():
-    parser = argparse.ArgumentParser(description='定时HTTP请求脚本')
-    parser.add_argument('-u', '--url', 
-                       default='https://www.google.com',
-                       help='要请求的URL地址 (默认: https://www.google.com)')
-    parser.add_argument('-i', '--interval', 
-                       type=int, 
-                       default=120,
-                       help='请求间隔时间（秒） (默认: 120秒)')
-    
-    args = parser.parse_args()
-    
-    # 创建并启动请求器
-    requester = PeriodicRequester(args.url, args.interval)
-    requester.run()
-
-if __name__ == "__main__":
-    main()
+exit 0
